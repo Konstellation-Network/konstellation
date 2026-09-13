@@ -127,9 +127,14 @@ func NewRootCmd() *cobra.Command {
 				return err
 			}
 
-			// --chain-id is parsed by now; pick the matching EIP-155 id so
-			// `init --chain-id konstellation-1` yields a node that can start.
+			// Best-effort EIP-155 id for a freshly created app.toml: --chain-id
+			// if given, else client.toml. The authoritative fix-up happens in
+			// initCmd, which rewrites evm-chain-id from the genesis it wrote,
+			// because app.toml may already exist (e.g. created by `config set`).
 			chainID, _ := cmd.Flags().GetString(flags.FlagChainID)
+			if chainID == "" {
+				chainID = initClientCtx.ChainID
+			}
 			customAppTemplate, customAppConfig := config.InitAppConfig(config.BaseDenom, config.EVMChainIDFor(chainID))
 			customTMConfig := initCometConfig()
 

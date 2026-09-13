@@ -23,7 +23,7 @@ out="$(mktemp)"; trap 'rm -f "$out"' EXIT
 # exit 3 = vulnerabilities found; we decide below. Any other non-zero is a real failure.
 govulncheck -format json "${args[@]}" > "$out" || [ $? -eq 3 ]
 
-allowed="$(grep -Ev '^\s*(#|$)' "$ALLOW" | awk '{print $1}' | sort -u)"
+allowed="$(grep -Ev '^\s*(#|$)' "$ALLOW" | awk '{print $1}' | sort -u || true)"
 
 # "reachable" = a finding whose trace starts at a function (symbol-level hit).
 reachable="$(jq -r 'select(.finding? and .finding.trace[0].function?) | .finding.osv' "$out" | sort -u)"

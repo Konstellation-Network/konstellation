@@ -486,8 +486,11 @@ func New(
 		),
 	)
 
-	// enable virtual fee collection
-	app.EVMKeeper.EnableVirtualFeeCollection()
+	// Virtual fee collection stays OFF with BlockSTM (ENGINEERING.md §2.5,
+	// §7.3): it is the v0.7.0-new per-tx fee path that ships as part of the
+	// parallel-execution bundle. Fees use the classic authante.DeductFees
+	// path. Enable together with NewSTMRunner in the same coordinated upgrade:
+	//   app.EVMKeeper.EnableVirtualFeeCollection()
 
 	app.Erc20Keeper = erc20keeper.NewKeeper(
 		keys[erc20types.StoreKey],
