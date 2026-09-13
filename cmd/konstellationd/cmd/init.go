@@ -45,17 +45,14 @@ func initCmd(mm module.BasicManager, defaultNodeHome string, defaultGenesis func
 		if denom != "" && denom != config.BaseDenom {
 			return fmt.Errorf("--%s must be %q: the base denom is fixed at genesis", genutilcli.FlagDefaultBondDenom, config.BaseDenom)
 		}
-		// The root pre-run has created app.toml from our template if it was
-		// absent. If it pre-existed (infra tooling, plain-SDK template) it must
-		// carry an evm-chain-id line for the post-init fix-up to patch; check
-		// now, before the SDK writes any node files.
+		// The root pre-run has already written config.toml/client.toml/app.toml
+		// (from our template if absent). If app.toml pre-existed (infra
+		// tooling, plain-SDK template) it must carry a numeric evm-chain-id
+		// for the post-init reconcile to read and patch; check now, before
+		// the SDK writes genesis.json and the validator keys.
 		appToml := appTomlPath(cmd)
-		b, err := os.ReadFile(appToml)
-		if err != nil {
-			return fmt.Errorf("read %s: %w", appToml, err)
-		}
-		if !evmChainIDLine.Match(b) {
-			return fmt.Errorf("%s has no [evm] evm-chain-id line; run init in an empty home or add the [evm] section first", appToml)
+		if _, err := readEVMChainID(appToml); err != nil {
+			return fmt.Errorf("%w; add `evm-chain-id = <n>` under [evm] in app.toml (or delete app.toml and rerun init to regenerate it)", err)
 		}
 		return nil
 	}

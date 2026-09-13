@@ -92,4 +92,4 @@ verify-deps:
 	@echo "deps OK"
 
 localnet: build
-	./local_node.sh -y
+	PATH="$(BUILDDIR):$$PATH" ./local_node.sh -y --no-install

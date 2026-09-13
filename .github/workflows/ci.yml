@@ -35,5 +35,5 @@ jobs:
           cache: true
       - uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          version: v2.13.1 # keep in step with .golangci.yml; bump deliberately
           args: --timeout 10m

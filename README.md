@@ -30,7 +30,7 @@ node refuses to run `konstellation-1` / `testnet-1` with the wrong EVM id.
 ## Layout
 
 ```
-app/            module wiring (app.go), genesis defaults, ante chain, upgrades/
+app/            module wiring (app.go, incl. upstream evmante handler), genesis defaults, upgrades/
 app/config/     chain constants, bech32, app.toml defaults, module permissions
 cmd/konstellationd/
 local_node.sh   single-validator dev chain

@@ -331,5 +331,4 @@ konstellationd start "$TRACE" \
 	--minimum-gas-prices=0esp \
 	--evm.min-tip=0 \
 	--home "$CHAINDIR" \
-	--json-rpc.api eth,txpool,personal,net,debug,web3 \
-	--chain-id "$CHAINID"
+	--json-rpc.api eth,txpool,personal,net,debug,web3
