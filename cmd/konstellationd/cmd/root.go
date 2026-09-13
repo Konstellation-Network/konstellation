@@ -86,7 +86,7 @@ func NewRootCmd() *cobra.Command {
 
 	rootCmd := &cobra.Command{
 		Use:   "konstellationd",
-		Short: "exemplary Cosmos EVM app",
+		Short: "Konstellation Network node daemon",
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			// set the default command outputs
 			cmd.SetOut(cmd.OutOrStdout())
@@ -364,7 +364,7 @@ func appExport(
 			return servertypes.ExportedApp{}, err
 		}
 	} else {
-		exampleApp = app.New(logger, db, true, appOpts, baseapp.SetChainID(chainID)) // TODO:VLAD - Remove // TODO:VLAD - Remove appoptions and evmchainid
+		exampleApp = app.New(logger, db, true, appOpts, baseapp.SetChainID(chainID))
 	}
 
 	return exampleApp.ExportAppStateAndValidators(forZeroHeight, jailAllowedAddrs, modulesToExport)
@@ -383,7 +383,7 @@ func appExport(
 func getChainIDFromOpts(appOpts servertypes.AppOptions) (string, error) {
 	flagID := cast.ToString(appOpts.Get(flags.FlagChainID))
 	homeDir := cast.ToString(appOpts.Get(flags.FlagHome))
-	genFile := filepath.Join(homeDir, "config", "genesis.json")
+	genFile := genesisPath(homeDir, cast.ToString(appOpts.Get("genesis_file")))
 
 	genID, err := chainIDFromGenesis(genFile)
 	switch {
@@ -408,6 +408,19 @@ func getChainIDFromOpts(appOpts servertypes.AppOptions) (string, error) {
 		return "", fmt.Errorf("chain-id: no genesis at %s, no --chain-id, and none in client.toml", genFile)
 	}
 	return clientID, nil
+}
+
+// genesisPath honours CometBFT's config.toml `genesis_file` (relative to the
+// node home unless absolute), defaulting to config/genesis.json — the same
+// resolution cmtcfg.Config.GenesisFile() performs.
+func genesisPath(homeDir, genesisFile string) string {
+	if genesisFile == "" {
+		genesisFile = filepath.Join("config", "genesis.json")
+	}
+	if filepath.IsAbs(genesisFile) {
+		return genesisFile
+	}
+	return filepath.Join(homeDir, genesisFile)
 }
 
 // chainIDFromGenesis streams only the chain_id field out of a genesis file.

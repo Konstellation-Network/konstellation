@@ -10,7 +10,7 @@ func TestValidateEVMChainID(t *testing.T) {
 		wantErr bool
 	}{
 		{"mainnet correct", ChainIDMainnet, EVMChainIDMainnet, false},
-		{"mainnet with stale testnet default", ChainIDMainnet, DefaultEVMChainID, true},
+		{"mainnet with default (local) id", ChainIDMainnet, DefaultEVMChainID, true},
 		{"testnet correct", ChainIDTestnet, EVMChainIDTestnet, false},
 		{"testnet with mainnet id", ChainIDTestnet, EVMChainIDMainnet, true},
 		{"local correct", ChainIDLocal, EVMChainIDLocal, false},
