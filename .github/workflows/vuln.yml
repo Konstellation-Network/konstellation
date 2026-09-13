@@ -1,0 +1,46 @@
+# ENGINEERING.md §4.3: govulncheck on every PR and nightly.
+#
+# PR:      scan the built binary (-mode=binary). Fast, and it scans exactly
+#          what ships. Built with nostrip so symbol-level analysis works.
+# Both go through scripts/vulncheck.sh, which fails on any reachable finding
+# not justified in .govulncheck-allowlist.
+# Nightly: full source scan (./...). Slower, catches advisories against
+#          code nobody touched, and reports reachable call traces.
+name: vuln
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  binary:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: make vulncheck-binary COSMOS_BUILD_OPTIONS=nostrip
+
+  source:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: make vulncheck

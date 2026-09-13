@@ -1,0 +1,434 @@
+package cmd
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"github.com/spf13/cast"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+
+	cmtcfg "github.com/cometbft/cometbft/config"
+	cmtcli "github.com/cometbft/cometbft/libs/cli"
+
+	dbm "github.com/cosmos/cosmos-db"
+	cosmosevmcmd "github.com/cosmos/evm/client"
+	evmdebug "github.com/cosmos/evm/client/debug"
+	"github.com/cosmos/evm/crypto/hd"
+	cosmosevmserver "github.com/cosmos/evm/server"
+	srvflags "github.com/cosmos/evm/server/flags"
+	"github.com/cosmos/evm/utils"
+
+	"cosmossdk.io/log/v2"
+	confixcmd "cosmossdk.io/tools/confix/cmd"
+
+	"github.com/cosmos/cosmos-sdk/baseapp"
+	"github.com/cosmos/cosmos-sdk/client"
+	clientcfg "github.com/cosmos/cosmos-sdk/client/config"
+	"github.com/cosmos/cosmos-sdk/client/flags"
+	"github.com/cosmos/cosmos-sdk/client/pruning"
+	"github.com/cosmos/cosmos-sdk/client/rpc"
+	"github.com/cosmos/cosmos-sdk/client/snapshot"
+	sdkserver "github.com/cosmos/cosmos-sdk/server"
+	servertypes "github.com/cosmos/cosmos-sdk/server/types"
+	"github.com/cosmos/cosmos-sdk/store/v2"
+	snapshottypes "github.com/cosmos/cosmos-sdk/store/v2/snapshots/types"
+	storetypes "github.com/cosmos/cosmos-sdk/store/v2/types"
+	simtestutil "github.com/cosmos/cosmos-sdk/testutil/sims"
+	sdk "github.com/cosmos/cosmos-sdk/types"
+	sdktestutil "github.com/cosmos/cosmos-sdk/types/module/testutil"
+	"github.com/cosmos/cosmos-sdk/types/tx/signing"
+	authcmd "github.com/cosmos/cosmos-sdk/x/auth/client/cli"
+	"github.com/cosmos/cosmos-sdk/x/auth/tx"
+	txmodule "github.com/cosmos/cosmos-sdk/x/auth/tx/config"
+	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
+	genutilcli "github.com/cosmos/cosmos-sdk/x/genutil/client/cli"
+	genutiltypes "github.com/cosmos/cosmos-sdk/x/genutil/types"
+
+	"github.com/Konstellation-Network/konstellation/app"
+	"github.com/Konstellation-Network/konstellation/app/config"
+)
+
+// NewRootCmd creates a new root command for evmd. It is called once in the
+// main function.
+func NewRootCmd() *cobra.Command {
+	// we "pre"-instantiate the application for getting the injected/configured encoding configuration
+	// and the CLI options for the modules
+	// add keyring to autocli opts
+	tempApp := app.New(
+		log.NewNopLogger(),
+		dbm.NewMemDB(),
+		true,
+		simtestutil.EmptyAppOptions{},
+	)
+
+	encodingConfig := sdktestutil.TestEncodingConfig{
+		InterfaceRegistry: tempApp.InterfaceRegistry(),
+		Codec:             tempApp.AppCodec(),
+		TxConfig:          tempApp.GetTxConfig(),
+		Amino:             tempApp.LegacyAmino(),
+	}
+	initClientCtx := client.Context{}.
+		WithCodec(encodingConfig.Codec).
+		WithInterfaceRegistry(encodingConfig.InterfaceRegistry).
+		WithTxConfig(encodingConfig.TxConfig).
+		WithLegacyAmino(encodingConfig.Amino).
+		WithInput(os.Stdin).
+		WithAccountRetriever(authtypes.AccountRetriever{}).
+		WithBroadcastMode(flags.FlagBroadcastMode).
+		WithHomeDir(config.MustGetDefaultNodeHome()).
+		WithViper(""). // In simapp, we don't use any prefix for env variables.
+		// Cosmos EVM specific setup
+		WithKeyringOptions(hd.EthSecp256k1Option()).
+		WithLedgerHasProtobuf(true)
+
+	rootCmd := &cobra.Command{
+		Use:   "konstellationd",
+		Short: "Konstellation Network node daemon",
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			// set the default command outputs
+			cmd.SetOut(cmd.OutOrStdout())
+			cmd.SetErr(cmd.ErrOrStderr())
+
+			initClientCtx = initClientCtx.WithCmdContext(cmd.Context())
+			initClientCtx, err := client.ReadPersistentCommandFlags(initClientCtx, cmd.Flags())
+			if err != nil {
+				return err
+			}
+
+			initClientCtx, err = clientcfg.ReadFromClientConfig(initClientCtx)
+			if err != nil {
+				return err
+			}
+
+			// This needs to go after ReadFromClientConfig, as that function
+			// sets the RPC client needed for SIGN_MODE_TEXTUAL. This sign mode
+			// is only available if the client is online.
+			if !initClientCtx.Offline {
+				enabledSignModes := append(tx.DefaultSignModes, signing.SignMode_SIGN_MODE_TEXTUAL) //nolint:gocritic
+				txConfigOpts := tx.ConfigOptions{
+					EnabledSignModes:           enabledSignModes,
+					TextualCoinMetadataQueryFn: txmodule.NewGRPCCoinMetadataQueryFn(initClientCtx),
+				}
+				txConfig, err := tx.NewTxConfigWithOptions(
+					initClientCtx.Codec,
+					txConfigOpts,
+				)
+				if err != nil {
+					return err
+				}
+
+				initClientCtx = initClientCtx.WithTxConfig(txConfig)
+			}
+
+			if err := client.SetCmdClientContextHandler(initClientCtx, cmd); err != nil {
+				return err
+			}
+
+			// Best-effort EIP-155 id for a freshly created app.toml: --chain-id
+			// if given, else client.toml. The authoritative fix-up happens in
+			// initCmd, which rewrites evm-chain-id from the genesis it wrote,
+			// because app.toml may already exist (e.g. created by `config set`).
+			chainID, _ := cmd.Flags().GetString(flags.FlagChainID)
+			if chainID == "" {
+				chainID = initClientCtx.ChainID
+			}
+			customAppTemplate, customAppConfig := config.InitAppConfig(config.BaseDenom, config.EVMChainIDFor(chainID))
+			customTMConfig := initCometConfig()
+
+			return sdkserver.InterceptConfigsPreRunHandler(cmd, customAppTemplate, customAppConfig, customTMConfig)
+		},
+	}
+
+	initRootCmd(rootCmd, tempApp)
+
+	autoCliOpts := tempApp.AutoCliOpts()
+	initClientCtx, _ = clientcfg.ReadFromClientConfig(initClientCtx)
+	autoCliOpts.ClientCtx = initClientCtx
+
+	if err := autoCliOpts.EnhanceRootCommand(rootCmd); err != nil {
+		panic(err)
+	}
+
+	return rootCmd
+}
+
+// initCometConfig helps to override default CometBFT Config values.
+// return cmtcfg.DefaultConfig if no custom configuration is required for the application.
+func initCometConfig() *cmtcfg.Config {
+	cfg := cmtcfg.DefaultConfig()
+
+	// cosmos/evm v0.7 ships the app-side EVM mempool (Krakatoa) enabled in
+	// app.toml; CometBFT v0.39 then requires mempool.type = "app" in
+	// config.toml or the node refuses to start (ENGINEERING.md §7.3). Keep
+	// the two files consistent at init instead of patching config.toml by hand.
+	cfg.Mempool.Type = cmtcfg.MempoolTypeApp
+
+	return cfg
+}
+
+func initRootCmd(rootCmd *cobra.Command, evmApp *app.KonstellationApp) {
+	cfg := sdk.GetConfig()
+	cfg.Seal()
+
+	defaultNodeHome := config.MustGetDefaultNodeHome()
+	sdkAppCreator := func(l log.Logger, d dbm.DB, ao servertypes.AppOptions) servertypes.Application {
+		return newApp(l, d, ao)
+	}
+	rootCmd.AddCommand(
+		initCmd(evmApp.BasicModuleManager, defaultNodeHome, evmApp.DefaultGenesis),
+		genutilcli.Commands(evmApp.TxConfig(), evmApp.BasicModuleManager, defaultNodeHome),
+		cmtcli.NewCompletionCmd(rootCmd, true),
+		evmdebug.Cmd(),
+		confixcmd.ConfigCommand(),
+		pruning.Cmd(sdkAppCreator, defaultNodeHome),
+		snapshot.Cmd(sdkAppCreator),
+	)
+
+	// add Cosmos EVM' flavored TM commands to start server, etc.
+	cosmosevmserver.AddCommands(
+		rootCmd,
+		cosmosevmserver.NewDefaultStartOptions(newApp, defaultNodeHome),
+		appExport,
+		addModuleInitFlags,
+	)
+
+	// add Cosmos EVM key commands
+	rootCmd.AddCommand(
+		cosmosevmcmd.KeyCommands(defaultNodeHome, true),
+	)
+
+	// add keybase, auxiliary RPC, query, genesis, and tx child commands
+	rootCmd.AddCommand(
+		sdkserver.StatusCommand(),
+		queryCommand(),
+		txCommand(),
+	)
+
+	// add general tx flags to the root command
+	var err error
+	_, err = srvflags.AddTxFlags(rootCmd)
+	if err != nil {
+		panic(err)
+	}
+}
+
+func addModuleInitFlags(_ *cobra.Command) {}
+
+func queryCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:                        "query",
+		Aliases:                    []string{"q"},
+		Short:                      "Querying subcommands",
+		DisableFlagParsing:         false,
+		SuggestionsMinimumDistance: 2,
+		RunE:                       client.ValidateCmd,
+	}
+
+	cmd.AddCommand(
+		rpc.QueryEventForTxCmd(),
+		rpc.ValidatorCommand(),
+		authcmd.QueryTxsByEventsCmd(),
+		authcmd.QueryTxCmd(),
+		sdkserver.QueryBlockCmd(),
+		sdkserver.QueryBlockResultsCmd(),
+	)
+
+	cmd.PersistentFlags().String(flags.FlagChainID, "", "The network chain ID")
+
+	return cmd
+}
+
+func txCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:                        "tx",
+		Short:                      "Transactions subcommands",
+		DisableFlagParsing:         false,
+		SuggestionsMinimumDistance: 2,
+		RunE:                       client.ValidateCmd,
+	}
+
+	cmd.AddCommand(
+		authcmd.GetSignCommand(),
+		authcmd.GetSignBatchCommand(),
+		authcmd.GetMultiSignCommand(),
+		authcmd.GetMultiSignBatchCmd(),
+		authcmd.GetValidateSignaturesCommand(),
+		authcmd.GetBroadcastCommand(),
+		authcmd.GetEncodeCommand(),
+		authcmd.GetDecodeCommand(),
+		authcmd.GetSimulateCmd(),
+	)
+
+	cmd.PersistentFlags().String(flags.FlagChainID, "", "The network chain ID")
+
+	return cmd
+}
+
+// newApp creates the application
+func newApp(
+	logger log.Logger,
+	db dbm.DB,
+	appOpts servertypes.AppOptions,
+) cosmosevmserver.Application {
+	var cache storetypes.MultiStorePersistentCache
+
+	if cast.ToBool(appOpts.Get(sdkserver.FlagInterBlockCache)) {
+		cache = store.NewCommitKVStoreCacheManager()
+	}
+
+	pruningOpts, err := sdkserver.GetPruningOptionsFromFlags(appOpts)
+	if err != nil {
+		panic(err)
+	}
+
+	// get the chain id
+	chainID, err := getChainIDFromOpts(appOpts)
+	if err != nil {
+		panic(err)
+	}
+
+	snapshotStore, err := sdkserver.GetSnapshotStore(appOpts)
+	if err != nil {
+		panic(err)
+	}
+
+	snapshotOptions := snapshottypes.NewSnapshotOptions(
+		cast.ToUint64(appOpts.Get(sdkserver.FlagStateSyncSnapshotInterval)),
+		cast.ToUint32(appOpts.Get(sdkserver.FlagStateSyncSnapshotKeepRecent)),
+	)
+
+	baseappOptions := []func(*baseapp.BaseApp){
+		baseapp.SetPruning(pruningOpts),
+		baseapp.SetMinGasPrices(cast.ToString(appOpts.Get(sdkserver.FlagMinGasPrices))),
+		baseapp.SetQueryGasLimit(cast.ToUint64(appOpts.Get(sdkserver.FlagQueryGasLimit))),
+		baseapp.SetHaltHeight(cast.ToUint64(appOpts.Get(sdkserver.FlagHaltHeight))),
+		baseapp.SetHaltTime(cast.ToUint64(appOpts.Get(sdkserver.FlagHaltTime))),
+		baseapp.SetMinRetainBlocks(cast.ToUint64(appOpts.Get(sdkserver.FlagMinRetainBlocks))),
+		baseapp.SetInterBlockCache(cache),
+		baseapp.SetTrace(cast.ToBool(appOpts.Get(sdkserver.FlagTrace))),
+		baseapp.SetIndexEvents(cast.ToStringSlice(appOpts.Get(sdkserver.FlagIndexEvents))),
+		baseapp.SetSnapshot(snapshotStore, snapshotOptions),
+		baseapp.SetIAVLCacheSize(cast.ToInt(appOpts.Get(sdkserver.FlagIAVLCacheSize))),
+		baseapp.SetIAVLDisableFastNode(cast.ToBool(appOpts.Get(sdkserver.FlagDisableIAVLFastNode))),
+		baseapp.SetChainID(chainID),
+	}
+
+	return app.New(
+		logger, db, true,
+		appOpts,
+		baseappOptions...,
+	)
+}
+
+// appExport creates a new application (optionally at a given height) and exports state.
+func appExport(
+	logger log.Logger,
+	db dbm.DB,
+	height int64,
+	forZeroHeight bool,
+	jailAllowedAddrs []string,
+	appOpts servertypes.AppOptions,
+	modulesToExport []string,
+) (servertypes.ExportedApp, error) {
+	var exampleApp *app.KonstellationApp
+
+	// this check is necessary as we use the flag in x/upgrade.
+	// we can exit more gracefully by checking the flag here.
+	homePath, ok := appOpts.Get(flags.FlagHome).(string)
+	if !ok || homePath == "" {
+		return servertypes.ExportedApp{}, errors.New("application home not set")
+	}
+
+	viperAppOpts, ok := appOpts.(*viper.Viper)
+	if !ok {
+		return servertypes.ExportedApp{}, errors.New("appOpts is not viper.Viper")
+	}
+
+	// overwrite the FlagInvCheckPeriod
+	viperAppOpts.Set(sdkserver.FlagInvCheckPeriod, 1)
+	appOpts = viperAppOpts
+
+	// get the chain id
+	chainID, err := getChainIDFromOpts(appOpts)
+	if err != nil {
+		return servertypes.ExportedApp{}, err
+	}
+
+	if height != -1 {
+		exampleApp = app.New(logger, db, false, appOpts, baseapp.SetChainID(chainID))
+
+		if err := exampleApp.LoadHeight(height); err != nil {
+			return servertypes.ExportedApp{}, err
+		}
+	} else {
+		exampleApp = app.New(logger, db, true, appOpts, baseapp.SetChainID(chainID))
+	}
+
+	return exampleApp.ExportAppStateAndValidators(forZeroHeight, jailAllowedAddrs, modulesToExport)
+}
+
+// getChainIDFromOpts returns the chain Id from app Opts
+// It first tries to get from the chainId flag, if not available
+// it will load from home
+// getChainIDFromOpts resolves the Cosmos chain-id for constructing the app.
+//
+// genesis.json is authoritative: it is what the network agreed on, and the
+// EVM chain-id guard in app.New keys off it. --chain-id and client.toml are
+// consulted only when there is no genesis yet, and if either disagrees with
+// genesis that is an error naming both sources — a stale client.toml must not
+// be able to steer the guard (or the operator) toward the wrong evm-chain-id.
+func getChainIDFromOpts(appOpts servertypes.AppOptions) (string, error) {
+	flagID := cast.ToString(appOpts.Get(flags.FlagChainID))
+	homeDir := cast.ToString(appOpts.Get(flags.FlagHome))
+	genFile := genesisPath(homeDir, cast.ToString(appOpts.Get("genesis_file")))
+
+	genID, err := chainIDFromGenesis(genFile)
+	switch {
+	case err == nil && genID != "":
+		if flagID != "" && flagID != genID {
+			return "", fmt.Errorf("--chain-id %q disagrees with %s (%q); the genesis is authoritative", flagID, genFile, genID)
+		}
+		if clientID, cerr := utils.GetChainIDFromHome(homeDir); cerr == nil && clientID != "" && clientID != genID {
+			return "", fmt.Errorf("client.toml chain-id %q disagrees with %s (%q); fix client.toml (`konstellationd config set client chain-id %s`)", clientID, genFile, genID, genID)
+		}
+		return genID, nil
+	case err != nil && !os.IsNotExist(err):
+		return "", fmt.Errorf("chain-id: cannot parse %s: %w", genFile, err)
+	}
+
+	// no genesis yet (pre-init commands): fall back to flag, then client.toml
+	if flagID != "" {
+		return flagID, nil
+	}
+	clientID, cerr := utils.GetChainIDFromHome(homeDir)
+	if cerr != nil || clientID == "" {
+		return "", fmt.Errorf("chain-id: no genesis at %s, no --chain-id, and none in client.toml", genFile)
+	}
+	return clientID, nil
+}
+
+// genesisPath honours CometBFT's config.toml `genesis_file` (relative to the
+// node home unless absolute), defaulting to config/genesis.json — the same
+// resolution cmtcfg.Config.GenesisFile() performs.
+func genesisPath(homeDir, genesisFile string) string {
+	if genesisFile == "" {
+		genesisFile = filepath.Join("config", "genesis.json")
+	}
+	if filepath.IsAbs(genesisFile) {
+		return genesisFile
+	}
+	return filepath.Join(homeDir, genesisFile)
+}
+
+// chainIDFromGenesis streams only the chain_id field out of a genesis file.
+func chainIDFromGenesis(genFile string) (string, error) {
+	f, err := os.Open(genFile)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	return genutiltypes.ParseChainIDFromGenesis(f)
+}
