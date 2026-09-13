@@ -1,0 +1,24 @@
+# govulncheck findings accepted with justification. One per line: <ID> <reason>.
+# Every entry here must have a matching record in ENGINEERING.md §4.1.1.
+# Re-review on every cosmos/evm or cosmos-sdk bump; remove entries as soon as
+# the Go vulnerability DB or upstream makes them unnecessary.
+#
+# scripts/vulncheck.sh fails on any *other* finding that is reachable from our code.
+
+# Go-vuln-DB entry has no `fixed` version; fix commit 0fff8c14 is an ancestor of
+# every cosmos/evm tag since v0.2.0 (verified 2026-09-13, §4.1.1).
+GO-2025-3684 cosmos/evm partial precompile writes: fixed since v0.2.0, DB range never closed
+
+# DB range ">= 0.50.0" has no `fixed`; fix commit 7dbed2fc is an ancestor of
+# cosmos-sdk v0.54.3 and the validation is present in x/auth/vesting (§4.1.1).
+GO-2024-2584 cosmos-sdk slashing evasion: fixed in v0.54.3, DB range never closed
+
+# Blanket "package is unmaintained" notice on x/crypto/openpgp. Our only path is
+# cosmos-sdk/crypto -> openpgp/armor (ASCII armor for `keys export`); no PGP
+# cryptography is performed. Upstream SDK dependency; nothing to bump.
+GO-2026-5932 x/crypto/openpgp notice: only armor encoding reachable via cosmos-sdk keys export
+
+# pion/dtls/v2 has no fixed release. Reached only via go-ethereum/p2p/nat ->
+# pion/stun/v2 (devp2p NAT traversal). konstellationd uses CometBFT p2p, not
+# devp2p; the reachable symbol is alert.Marshal, not the AES-GCM ciphersuite.
+GO-2026-4479 pion/dtls/v2 AES-GCM nonce: devp2p NAT path unused; no fixed version exists
