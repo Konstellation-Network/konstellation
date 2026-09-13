@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -78,9 +79,53 @@ func initCmd(mm module.BasicManager, defaultNodeHome string, defaultGenesis func
 		if err != nil {
 			return fmt.Errorf("parse chain-id from genesis: %w", err)
 		}
-		return setEVMChainID(appTomlPath(cmd), config.EVMChainIDFor(chainID))
+		return reconcileEVMChainID(cmd, appTomlPath(cmd), chainID)
 	}
 	return cmd
+}
+
+// reconcileEVMChainID makes app.toml's evm-chain-id consistent with the
+// network in genesis:
+//   - known network: force the required id;
+//   - unknown network: keep a deliberately set id unless it belongs to a real
+//     network (that would put a dev net in mainnet/testnet's replay domain),
+//     in which case use the local id.
+//
+// Any change is printed so nothing is rewritten silently.
+func reconcileEVMChainID(cmd *cobra.Command, appToml, chainID string) error {
+	current, err := readEVMChainID(appToml)
+	if err != nil {
+		return err
+	}
+	want := current
+	switch req, known := config.RequiredEVMChainID[chainID]; {
+	case known:
+		want = req
+	case config.IsRealNetworkEVMChainID(current):
+		want = config.EVMChainIDLocal
+	}
+	if want == current {
+		return nil
+	}
+	if err := setEVMChainID(appToml, want); err != nil {
+		return err
+	}
+	cmd.PrintErrf("app.toml: evm-chain-id %d -> %d for chain-id %q\n", current, want, chainID)
+	return nil
+}
+
+var evmChainIDValue = regexp.MustCompile(`(?m)^evm-chain-id\s*=\s*"?(\d+)"?`)
+
+func readEVMChainID(appToml string) (uint64, error) {
+	b, err := os.ReadFile(appToml)
+	if err != nil {
+		return 0, fmt.Errorf("read %s: %w", appToml, err)
+	}
+	m := evmChainIDValue.FindSubmatch(b)
+	if m == nil {
+		return 0, fmt.Errorf("%s has no parseable evm-chain-id line", appToml)
+	}
+	return strconv.ParseUint(string(m[1]), 10, 64)
 }
 
 func appTomlPath(cmd *cobra.Command) string {

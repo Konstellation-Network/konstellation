@@ -116,15 +116,39 @@ func EVMChainIDFor(cosmosChainID string) uint64 {
 	return DefaultEVMChainID
 }
 
-// ValidateEVMChainID returns an error if cosmosChainID is a known network and
-// evmChainID is not the one it requires.
+// realNetworkEVMChainIDs are the replay domains of networks that hold (or will
+// hold) real value. No chain-id other than the one that owns it may run with
+// one of these, whatever app.toml says.
+var realNetworkEVMChainIDs = map[uint64]string{
+	EVMChainIDMainnet: ChainIDMainnet,
+	EVMChainIDTestnet: ChainIDTestnet,
+}
+
+// ValidateEVMChainID enforces the pairing in both directions:
+//   - a known chain-id must run with exactly the EVM id it requires;
+//   - an unknown chain-id (dev/staging nets) must not run with a real
+//     network's EVM id, or a tx signed there replays on that network.
 func ValidateEVMChainID(cosmosChainID string, evmChainID uint64) error {
-	want, known := RequiredEVMChainID[cosmosChainID]
-	if known && evmChainID != want {
+	if want, known := RequiredEVMChainID[cosmosChainID]; known {
+		if evmChainID != want {
+			return fmt.Errorf(
+				"genesis chain-id %q requires evm-chain-id %d, app.toml has %d: set [evm] evm-chain-id = %d in app.toml before starting",
+				cosmosChainID, want, evmChainID, want,
+			)
+		}
+		return nil
+	}
+	if owner, reserved := realNetworkEVMChainIDs[evmChainID]; reserved {
 		return fmt.Errorf(
-			"genesis chain-id %q requires evm-chain-id %d, app.toml has %d: set [evm] evm-chain-id = %d in app.toml before starting",
-			cosmosChainID, want, evmChainID, want,
+			"genesis chain-id %q is not %s but app.toml has evm-chain-id %d, which belongs to %s: a tx signed here would replay there; use %d (local) or another unreserved id",
+			cosmosChainID, owner, evmChainID, owner, EVMChainIDLocal,
 		)
 	}
 	return nil
+}
+
+// IsRealNetworkEVMChainID reports whether id belongs to mainnet or testnet.
+func IsRealNetworkEVMChainID(id uint64) bool {
+	_, ok := realNetworkEVMChainIDs[id]
+	return ok
 }

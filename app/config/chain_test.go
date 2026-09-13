@@ -15,8 +15,12 @@ func TestValidateEVMChainID(t *testing.T) {
 		{"testnet with mainnet id", ChainIDTestnet, EVMChainIDMainnet, true},
 		{"local correct", ChainIDLocal, EVMChainIDLocal, false},
 		{"local with testnet id", ChainIDLocal, EVMChainIDTestnet, true},
-		{"unknown network unconstrained", "some-other-net", 424242, false},
-		{"empty chain-id unconstrained", "", EVMChainIDMainnet, false},
+		{"unknown network with its own id", "some-other-net", 424242, false},
+		{"unknown network with local id", "some-other-net", EVMChainIDLocal, false},
+		{"unknown network with MAINNET id (replay domain)", "konstellation-staging-1", EVMChainIDMainnet, true},
+		{"unknown network with TESTNET id (replay domain)", "konstellation-staging-1", EVMChainIDTestnet, true},
+		{"empty chain-id with mainnet id", "", EVMChainIDMainnet, true},
+		{"empty chain-id with local id", "", EVMChainIDLocal, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

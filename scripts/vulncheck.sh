@@ -16,12 +16,17 @@ case "$mode" in
   *) echo "unknown mode: $mode" >&2; exit 2 ;;
 esac
 
-command -v govulncheck >/dev/null || go install golang.org/x/vuln/cmd/govulncheck@latest
 command -v jq >/dev/null || { echo "jq is required" >&2; exit 2; }
+GOVULNCHECK="$(command -v govulncheck || true)"
+if [ -z "$GOVULNCHECK" ]; then
+  go install golang.org/x/vuln/cmd/govulncheck@latest
+  GOVULNCHECK="$(go env GOPATH)/bin/govulncheck"
+fi
+[ -x "$GOVULNCHECK" ] || { echo "govulncheck not found on PATH or in $(go env GOPATH)/bin" >&2; exit 2; }
 
 out="$(mktemp)"; trap 'rm -f "$out"' EXIT
 # exit 3 = vulnerabilities found; we decide below. Any other non-zero is a real failure.
-govulncheck -format json "${args[@]}" > "$out" || [ $? -eq 3 ]
+"$GOVULNCHECK" -format json "${args[@]}" > "$out" || [ $? -eq 3 ]
 
 allowed="$(grep -Ev '^\s*(#|$)' "$ALLOW" | awk '{print $1}' | sort -u || true)"
 
