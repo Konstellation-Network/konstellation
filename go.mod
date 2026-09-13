@@ -2,6 +2,8 @@ module github.com/Konstellation-Network/konstellation
 
 go 1.25.9
 
+toolchain go1.26.8
+
 require (
 	cosmossdk.io/api v1.0.0
 	cosmossdk.io/client/v2 v2.0.0-beta.10.0.20260227212600-39d4711b8970
