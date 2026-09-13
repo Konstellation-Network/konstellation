@@ -127,7 +127,10 @@ func NewRootCmd() *cobra.Command {
 				return err
 			}
 
-			customAppTemplate, customAppConfig := config.InitAppConfig(config.BaseDenom, config.DefaultEVMChainID)
+			// --chain-id is parsed by now; pick the matching EIP-155 id so
+			// `init --chain-id konstellation-1` yields a node that can start.
+			chainID, _ := cmd.Flags().GetString(flags.FlagChainID)
+			customAppTemplate, customAppConfig := config.InitAppConfig(config.BaseDenom, config.EVMChainIDFor(chainID))
 			customTMConfig := initCometConfig()
 
 			return sdkserver.InterceptConfigsPreRunHandler(cmd, customAppTemplate, customAppConfig, customTMConfig)
@@ -383,15 +386,21 @@ func getChainIDFromOpts(appOpts servertypes.AppOptions) (chainID string, err err
 	}
 
 	genFile := filepath.Join(homeDir, "config", "genesis.json")
-	appGenesis, gerr := genutiltypes.AppGenesisFromFile(genFile)
+	f, gerr := os.Open(genFile)
 	if gerr != nil {
 		if err != nil {
 			return "", fmt.Errorf("chain-id: not in flags, client.toml (%v) or genesis (%w)", err, gerr)
 		}
 		return "", fmt.Errorf("chain-id: not in flags or client.toml, and genesis unreadable: %w", gerr)
 	}
-	if appGenesis.ChainID == "" {
+	defer f.Close()
+	// streaming parse: does not decode the whole (possibly large) genesis
+	chainID, gerr = genutiltypes.ParseChainIDFromGenesis(f)
+	if gerr != nil {
+		return "", fmt.Errorf("chain-id: not in flags or client.toml, and not parseable from %s: %w", genFile, gerr)
+	}
+	if chainID == "" {
 		return "", fmt.Errorf("chain-id: empty in flags, client.toml and %s", genFile)
 	}
-	return appGenesis.ChainID, nil
+	return chainID, nil
 }

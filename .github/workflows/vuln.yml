@@ -1,6 +1,9 @@
 # ENGINEERING.md §4.3: govulncheck on every PR and nightly.
-# The nightly run is the important one — a new advisory can land against
-# code nobody touched.
+#
+# PR:      scan the built binary (-mode=binary). Fast, and it scans exactly
+#          what ships. Built with nostrip so symbol-level analysis works.
+# Nightly: full source scan (./...). Slower, catches advisories against
+#          code nobody touched, and reports reachable call traces.
 name: vuln
 on:
   pull_request:
@@ -14,8 +17,24 @@ permissions:
   contents: read
 
 jobs:
-  govulncheck:
+  binary:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: make build COSMOS_BUILD_OPTIONS=nostrip
+      - run: govulncheck -mode=binary build/konstellationd
+
+  source:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

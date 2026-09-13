@@ -15,15 +15,17 @@ Read `../ENGINEERING.md` (org root) before working here. §2 lists hard constrai
 
 ## Chain identity
 
-| | mainnet | testnet |
-|---|---|---|
-| Cosmos chain-id | `konstellation-1` | `testnet-1` |
-| EIP-155 chain id | `5667` | `56671` |
-| Token | KASH — base denom `esp`, 18 decimals | |
-| Bech32 prefix | `kons` | |
+| | mainnet | testnet | local dev |
+|---|---|---|---|
+| Cosmos chain-id | `konstellation-1` | `testnet-1` | `konstellation-local-1` (or anything unlisted) |
+| EIP-155 chain id | `5667` | `56671` | `56670` |
+| Token | KASH — base denom `esp`, 18 decimals | | |
+| Bech32 prefix | `kons` | | |
 
-The EVM chain id is set in `app.toml` → `[evm] evm-chain-id`. `konstellationd init`
-writes the **testnet** value by default; mainnet operators must set `5667`.
+The EVM chain id lives in `app.toml` → `[evm] evm-chain-id`. `konstellationd init
+--chain-id <id>` writes the matching value; unrecognised chain-ids get the local
+id so a dev-chain signature can never replay on a real network. At startup the
+node refuses to run `konstellation-1` / `testnet-1` with the wrong EVM id.
 
 ## Layout
 

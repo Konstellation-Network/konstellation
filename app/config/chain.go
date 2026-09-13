@@ -24,13 +24,15 @@ const (
 	// Decimals: cosmos/evm supports 18-decimal gas tokens only (§3).
 	Decimals = evmtypes.EighteenDecimals
 
-	// EVMChainIDMainnet / EVMChainIDTestnet are the EIP-155 ids (D1).
-	// Both were verified absent from ethereum-lists/chains on 2026-09-13.
+	// EIP-155 ids (D1). All three verified absent from ethereum-lists/chains
+	// on 2026-09-13. Local dev nets get their own id so a tx signed for a dev
+	// chain can never replay on testnet-1.
 	EVMChainIDMainnet uint64 = 5667
 	EVMChainIDTestnet uint64 = 56671
-	// DefaultEVMChainID is written into app.toml by `konstellationd init`.
-	// Mainnet operators MUST override it to EVMChainIDMainnet.
-	DefaultEVMChainID = EVMChainIDTestnet
+	EVMChainIDLocal   uint64 = 56670
+	// DefaultEVMChainID is what `konstellationd init` writes to app.toml for a
+	// Cosmos chain-id it does not recognise (see EVMChainIDFor).
+	DefaultEVMChainID = EVMChainIDLocal
 
 	// WKASHPrecompile is the address of the werc20 native precompile that wraps
 	// the base denom. Kept at the upstream default so wallet/tooling assumptions
@@ -91,15 +93,27 @@ func kash(n int64) sdk.Coins {
 const (
 	ChainIDMainnet = "konstellation-1"
 	ChainIDTestnet = "testnet-1"
+	ChainIDLocal   = "konstellation-local-1"
 )
 
 // RequiredEVMChainID maps a Cosmos chain-id to the EIP-155 id it must run
 // with. The EVM id lives in app.toml (per node), the Cosmos id in genesis
 // (per network); a node with the two out of step signs blocks nobody else
-// accepts. Unknown chain-ids (local dev nets) are unconstrained.
+// accepts. Chain-ids not listed here are unconstrained.
 var RequiredEVMChainID = map[string]uint64{
 	ChainIDMainnet: EVMChainIDMainnet,
 	ChainIDTestnet: EVMChainIDTestnet,
+	ChainIDLocal:   EVMChainIDLocal,
+}
+
+// EVMChainIDFor returns the EIP-155 id `init` should write to app.toml for
+// the given Cosmos chain-id: the required one for known networks, otherwise
+// the local dev id.
+func EVMChainIDFor(cosmosChainID string) uint64 {
+	if id, ok := RequiredEVMChainID[cosmosChainID]; ok {
+		return id
+	}
+	return DefaultEVMChainID
 }
 
 // ValidateEVMChainID returns an error if cosmosChainID is a known network and

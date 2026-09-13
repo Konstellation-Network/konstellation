@@ -68,18 +68,21 @@ vulncheck:
 
 # ENGINEERING.md §2.1 / §2.2 / §2.3.
 #  - the four upstream modules may never be the LHS of a replace, whatever the RHS
-#  - our replace block must be byte-identical to the one in the pinned cosmos/evm go.mod
-#  - cosmos/evm must resolve to the module cache and every core dep must be a semver tag
+#  - the full set of replaces (block or standalone) must equal the pinned cosmos/evm go.mod's
+#  - cosmos/evm must resolve inside GOMODCACHE and every core dep must be a semver tag
+# Works on a cold module cache: downloads only cosmos/evm first. Needs jq (as does local_node.sh).
 PROTECTED := github.com/cosmos/evm github.com/cosmos/cosmos-sdk github.com/cometbft/cometbft github.com/cosmos/ibc-go
+REPLACES_JQ := '[.Replace[]? | "\(.Old.Path) \(.Old.Version // "") => \(.New.Path) \(.New.Version // "")"] | sort | .[]'
 verify-deps:
+	@command -v jq >/dev/null || { echo "ERROR: jq is required"; exit 1; }
 	@for m in $(PROTECTED); do \
-	  if grep -Eiq "^\s*(replace\s+)?$$m(/v[0-9]+)?\s+=>" go.mod; then \
+	  if go mod edit -json | jq -e --arg m "$$m" '.Replace[]? | select((.Old.Path | ascii_downcase) as $$p | $$p == ($$m|ascii_downcase) or ($$p | startswith(($$m|ascii_downcase)+"/v")))' >/dev/null; then \
 	    echo "ERROR: replace directive for $$m (ENGINEERING.md §2.1)"; exit 1; fi; done
-	@upstream="$$(go list -m -f '{{.Dir}}' github.com/cosmos/evm)/go.mod"; \
-	  diff <(sed -n '/^replace (/,/^)/p' go.mod | grep -v '^\s*//' ) <(sed -n '/^replace (/,/^)/p' "$$upstream" | grep -v '^\s*//') \
-	  || { echo "ERROR: replace block differs from upstream cosmos/evm go.mod (ENGINEERING.md §2.2)"; exit 1; }
-	@go list -m -f '{{.Path}} {{.Version}} {{.Dir}}' github.com/cosmos/evm | grep -q "pkg/mod/github.com/cosmos/evm@" \
-	  || { echo "ERROR: cosmos/evm does not resolve to the module cache"; exit 1; }
+	@go mod download github.com/cosmos/evm
+	@upstream="$$(go list -m -f '{{.Dir}}' github.com/cosmos/evm)/go.mod"; test -f "$$upstream" || { echo "ERROR: cannot locate upstream cosmos/evm go.mod"; exit 1; }; \
+	  diff <(go mod edit -json | jq -r $(REPLACES_JQ)) <(go mod edit -json "$$upstream" | jq -r $(REPLACES_JQ)) \
+	  || { echo "ERROR: replace set differs from upstream cosmos/evm go.mod (ENGINEERING.md §2.2)"; exit 1; }
+	@dir="$$(go list -m -f '{{.Dir}}' github.com/cosmos/evm)"; case "$$dir" in "$$(go env GOMODCACHE)"/*) ;; *) echo "ERROR: cosmos/evm resolves to $$dir, not the module cache"; exit 1;; esac
 	@for m in $(PROTECTED); do go list -m all | grep -E "^$$m(/v[0-9]+)? " ; done \
 	  | grep -vE " v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$$" \
 	  && { echo "ERROR: core dependency not pinned to a semver tag (ENGINEERING.md §2.3)"; exit 1; } || true

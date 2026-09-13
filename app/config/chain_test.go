@@ -13,7 +13,9 @@ func TestValidateEVMChainID(t *testing.T) {
 		{"mainnet with stale testnet default", ChainIDMainnet, DefaultEVMChainID, true},
 		{"testnet correct", ChainIDTestnet, EVMChainIDTestnet, false},
 		{"testnet with mainnet id", ChainIDTestnet, EVMChainIDMainnet, true},
-		{"unknown network unconstrained", "konstellation-local-1", 424242, false},
+		{"local correct", ChainIDLocal, EVMChainIDLocal, false},
+		{"local with testnet id", ChainIDLocal, EVMChainIDTestnet, true},
+		{"unknown network unconstrained", "some-other-net", 424242, false},
 		{"empty chain-id unconstrained", "", EVMChainIDMainnet, false},
 	}
 	for _, tc := range cases {
@@ -36,5 +38,21 @@ func TestGovDepositsAreWholeTokens(t *testing.T) {
 	}
 	if GovMinDeposit[0].Denom != BaseDenom {
 		t.Fatalf("denom = %q, want %q", GovMinDeposit[0].Denom, BaseDenom)
+	}
+}
+
+func TestEVMChainIDFor(t *testing.T) {
+	if got := EVMChainIDFor(ChainIDMainnet); got != EVMChainIDMainnet {
+		t.Fatalf("mainnet: got %d", got)
+	}
+	if got := EVMChainIDFor(ChainIDTestnet); got != EVMChainIDTestnet {
+		t.Fatalf("testnet: got %d", got)
+	}
+	// unknown networks must never inherit a real network's replay domain
+	if got := EVMChainIDFor("anything-else"); got != EVMChainIDLocal {
+		t.Fatalf("unknown: got %d, want local %d", got, EVMChainIDLocal)
+	}
+	if EVMChainIDLocal == EVMChainIDTestnet || EVMChainIDLocal == EVMChainIDMainnet {
+		t.Fatal("local id collides with a real network")
 	}
 }
