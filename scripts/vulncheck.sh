@@ -41,7 +41,7 @@ if [ -n "$blocked" ]; then
   echo "BLOCKING vulnerabilities reachable from our code:"
   for id in $blocked; do
     jq -r --arg id "$id" 'select(.osv? and .osv.id==$id) | "  \(.osv.id)  \(.osv.summary)"' "$out"
-    jq -r --arg id "$id" 'select(.finding? and .finding.osv==$id and .finding.trace[0].function?) | "      \(.finding.trace[0].module)@\(.finding.trace[0].version // "?")  \(.finding.trace[0].package).\(.finding.trace[0].function)"' "$out" | sort -u | head -3
+    jq -r --arg id "$id" 'select(.finding? and .finding.osv==$id and .finding.trace[0].function?) | "      \(.finding.trace[0].module)@\(.finding.trace[0].version // "?")  \(.finding.trace[0].package).\(.finding.trace[0].function)"' "$out" | sort -u | head -3 || true
   done
   echo
   echo "Bump the dependency, or add an entry to .govulncheck-allowlist with a justification recorded in ENGINEERING.md §4.1.1."

@@ -122,8 +122,8 @@ func ValidateEVMChainID(cosmosChainID string, evmChainID uint64) error {
 	want, known := RequiredEVMChainID[cosmosChainID]
 	if known && evmChainID != want {
 		return fmt.Errorf(
-			"chain-id %q requires evm-chain-id %d, app.toml has %d: fix [evm] evm-chain-id before starting",
-			cosmosChainID, want, evmChainID,
+			"genesis chain-id %q requires evm-chain-id %d, app.toml has %d: set [evm] evm-chain-id = %d in app.toml before starting",
+			cosmosChainID, want, evmChainID, want,
 		)
 	}
 	return nil

@@ -44,6 +44,18 @@ func initCmd(mm module.BasicManager, defaultNodeHome string, defaultGenesis func
 		if denom != "" && denom != config.BaseDenom {
 			return fmt.Errorf("--%s must be %q: the base denom is fixed at genesis", genutilcli.FlagDefaultBondDenom, config.BaseDenom)
 		}
+		// The root pre-run has created app.toml from our template if it was
+		// absent. If it pre-existed (infra tooling, plain-SDK template) it must
+		// carry an evm-chain-id line for the post-init fix-up to patch; check
+		// now, before the SDK writes any node files.
+		appToml := appTomlPath(cmd)
+		b, err := os.ReadFile(appToml)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", appToml, err)
+		}
+		if !evmChainIDLine.Match(b) {
+			return fmt.Errorf("%s has no [evm] evm-chain-id line; run init in an empty home or add the [evm] section first", appToml)
+		}
 		return nil
 	}
 
@@ -66,10 +78,14 @@ func initCmd(mm module.BasicManager, defaultNodeHome string, defaultGenesis func
 		if err != nil {
 			return fmt.Errorf("parse chain-id from genesis: %w", err)
 		}
-		appToml := filepath.Join(cfg.RootDir, "config", "app.toml")
-		return setEVMChainID(appToml, config.EVMChainIDFor(chainID))
+		return setEVMChainID(appTomlPath(cmd), config.EVMChainIDFor(chainID))
 	}
 	return cmd
+}
+
+func appTomlPath(cmd *cobra.Command) string {
+	root := server.GetServerContextFromCmd(cmd).Config.RootDir
+	return filepath.Clean(filepath.Join(root, "config", "app.toml"))
 }
 
 var evmChainIDLine = regexp.MustCompile(`(?m)^evm-chain-id\s*=.*$`)

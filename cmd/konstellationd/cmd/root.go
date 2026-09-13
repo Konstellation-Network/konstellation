@@ -373,39 +373,49 @@ func appExport(
 // getChainIDFromOpts returns the chain Id from app Opts
 // It first tries to get from the chainId flag, if not available
 // it will load from home
-// getChainIDFromOpts resolves the Cosmos chain-id in priority order:
-// --chain-id flag, client.toml, genesis.json. Upstream stops at client.toml,
-// which `init` leaves empty, so a node started without the flag constructed
-// its app with chain-id "" and failed InitChain. genesis.json is the
-// authoritative value and is what the app must run with.
-func getChainIDFromOpts(appOpts servertypes.AppOptions) (chainID string, err error) {
-	chainID = cast.ToString(appOpts.Get(flags.FlagChainID))
-	if chainID != "" {
-		return chainID, nil
-	}
-
+// getChainIDFromOpts resolves the Cosmos chain-id for constructing the app.
+//
+// genesis.json is authoritative: it is what the network agreed on, and the
+// EVM chain-id guard in app.New keys off it. --chain-id and client.toml are
+// consulted only when there is no genesis yet, and if either disagrees with
+// genesis that is an error naming both sources — a stale client.toml must not
+// be able to steer the guard (or the operator) toward the wrong evm-chain-id.
+func getChainIDFromOpts(appOpts servertypes.AppOptions) (string, error) {
+	flagID := cast.ToString(appOpts.Get(flags.FlagChainID))
 	homeDir := cast.ToString(appOpts.Get(flags.FlagHome))
-	chainID, err = utils.GetChainIDFromHome(homeDir)
-	if err == nil && chainID != "" {
-		return chainID, nil
+	genFile := filepath.Join(homeDir, "config", "genesis.json")
+
+	genID, err := chainIDFromGenesis(genFile)
+	switch {
+	case err == nil && genID != "":
+		if flagID != "" && flagID != genID {
+			return "", fmt.Errorf("--chain-id %q disagrees with %s (%q); the genesis is authoritative", flagID, genFile, genID)
+		}
+		if clientID, cerr := utils.GetChainIDFromHome(homeDir); cerr == nil && clientID != "" && clientID != genID {
+			return "", fmt.Errorf("client.toml chain-id %q disagrees with %s (%q); fix client.toml (`konstellationd config set client chain-id %s`)", clientID, genFile, genID, genID)
+		}
+		return genID, nil
+	case err != nil && !os.IsNotExist(err):
+		return "", fmt.Errorf("chain-id: cannot parse %s: %w", genFile, err)
 	}
 
-	genFile := filepath.Join(homeDir, "config", "genesis.json")
-	f, gerr := os.Open(genFile)
-	if gerr != nil {
-		if err != nil {
-			return "", fmt.Errorf("chain-id: not in flags, client.toml (%v) or genesis (%w)", err, gerr)
-		}
-		return "", fmt.Errorf("chain-id: not in flags or client.toml, and genesis unreadable: %w", gerr)
+	// no genesis yet (pre-init commands): fall back to flag, then client.toml
+	if flagID != "" {
+		return flagID, nil
+	}
+	clientID, cerr := utils.GetChainIDFromHome(homeDir)
+	if cerr != nil || clientID == "" {
+		return "", fmt.Errorf("chain-id: no genesis at %s, no --chain-id, and none in client.toml", genFile)
+	}
+	return clientID, nil
+}
+
+// chainIDFromGenesis streams only the chain_id field out of a genesis file.
+func chainIDFromGenesis(genFile string) (string, error) {
+	f, err := os.Open(genFile)
+	if err != nil {
+		return "", err
 	}
 	defer f.Close()
-	// streaming parse: does not decode the whole (possibly large) genesis
-	chainID, gerr = genutiltypes.ParseChainIDFromGenesis(f)
-	if gerr != nil {
-		return "", fmt.Errorf("chain-id: not in flags or client.toml, and not parseable from %s: %w", genFile, gerr)
-	}
-	if chainID == "" {
-		return "", fmt.Errorf("chain-id: empty in flags, client.toml and %s", genFile)
-	}
-	return chainID, nil
+	return genutiltypes.ParseChainIDFromGenesis(f)
 }
