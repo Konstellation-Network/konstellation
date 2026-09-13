@@ -1,4 +1,5 @@
 #!/usr/bin/make -f
+SHELL := /bin/bash
 
 BINARY   := konstellationd
 MAIN_PKG := ./cmd/konstellationd
@@ -65,12 +66,23 @@ lint:
 vulncheck:
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
-# ENGINEERING.md §2.2 / §2.3: no local replaces, no branch pins, cosmos/evm resolves to the module cache.
+# ENGINEERING.md §2.1 / §2.2 / §2.3.
+#  - the four upstream modules may never be the LHS of a replace, whatever the RHS
+#  - our replace block must be byte-identical to the one in the pinned cosmos/evm go.mod
+#  - cosmos/evm must resolve to the module cache and every core dep must be a semver tag
+PROTECTED := github.com/cosmos/evm github.com/cosmos/cosmos-sdk github.com/cometbft/cometbft github.com/cosmos/ibc-go
 verify-deps:
-	@echo "replace directives:"; grep -n "=>" go.mod | grep -v "//" || true
-	@! grep -E "=>.*(Konstellation-Network|\.\./|\./)" go.mod || (echo "ERROR: local replace directive found (ENGINEERING.md §2.2)"; exit 1)
-	@go list -m -f '{{.Path}} {{.Version}} {{.Dir}}' github.com/cosmos/evm | grep -q "pkg/mod" || (echo "ERROR: cosmos/evm does not resolve to the module cache"; exit 1)
-	@go list -m all | grep -E "cosmos/evm|cosmos-sdk |cometbft/cometbft |ibc-go" | grep -vE "v[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?( |$$)" && (echo "ERROR: dependency pinned to a non-tag version (ENGINEERING.md §2.3)"; exit 1) || true
+	@for m in $(PROTECTED); do \
+	  if grep -Eiq "^\s*(replace\s+)?$$m(/v[0-9]+)?\s+=>" go.mod; then \
+	    echo "ERROR: replace directive for $$m (ENGINEERING.md §2.1)"; exit 1; fi; done
+	@upstream="$$(go list -m -f '{{.Dir}}' github.com/cosmos/evm)/go.mod"; \
+	  diff <(sed -n '/^replace (/,/^)/p' go.mod | grep -v '^\s*//' ) <(sed -n '/^replace (/,/^)/p' "$$upstream" | grep -v '^\s*//') \
+	  || { echo "ERROR: replace block differs from upstream cosmos/evm go.mod (ENGINEERING.md §2.2)"; exit 1; }
+	@go list -m -f '{{.Path}} {{.Version}} {{.Dir}}' github.com/cosmos/evm | grep -q "pkg/mod/github.com/cosmos/evm@" \
+	  || { echo "ERROR: cosmos/evm does not resolve to the module cache"; exit 1; }
+	@for m in $(PROTECTED); do go list -m all | grep -E "^$$m(/v[0-9]+)? " ; done \
+	  | grep -vE " v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$$" \
+	  && { echo "ERROR: core dependency not pinned to a semver tag (ENGINEERING.md §2.3)"; exit 1; } || true
 	@echo "deps OK"
 
 localnet: build

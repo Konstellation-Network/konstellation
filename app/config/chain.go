@@ -1,11 +1,15 @@
 package config
 
 import (
-	"cosmossdk.io/math"
-	sdk "github.com/cosmos/cosmos-sdk/types"
-	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
+	"fmt"
+
 	erc20types "github.com/cosmos/evm/x/erc20/types"
 	evmtypes "github.com/cosmos/evm/x/vm/types"
+
+	"cosmossdk.io/math"
+
+	sdk "github.com/cosmos/cosmos-sdk/types"
+	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 )
 
 // Chain identity. Every value here is recorded as a decision in ENGINEERING.md
@@ -81,4 +85,32 @@ var (
 func kash(n int64) sdk.Coins {
 	one := math.NewIntWithDecimal(1, int(Decimals))
 	return sdk.NewCoins(sdk.NewCoin(BaseDenom, one.MulRaw(n)))
+}
+
+// Cosmos chain-id strings (ENGINEERING.md §1).
+const (
+	ChainIDMainnet = "konstellation-1"
+	ChainIDTestnet = "testnet-1"
+)
+
+// RequiredEVMChainID maps a Cosmos chain-id to the EIP-155 id it must run
+// with. The EVM id lives in app.toml (per node), the Cosmos id in genesis
+// (per network); a node with the two out of step signs blocks nobody else
+// accepts. Unknown chain-ids (local dev nets) are unconstrained.
+var RequiredEVMChainID = map[string]uint64{
+	ChainIDMainnet: EVMChainIDMainnet,
+	ChainIDTestnet: EVMChainIDTestnet,
+}
+
+// ValidateEVMChainID returns an error if cosmosChainID is a known network and
+// evmChainID is not the one it requires.
+func ValidateEVMChainID(cosmosChainID string, evmChainID uint64) error {
+	want, known := RequiredEVMChainID[cosmosChainID]
+	if known && evmChainID != want {
+		return fmt.Errorf(
+			"chain-id %q requires evm-chain-id %d, app.toml has %d: fix [evm] evm-chain-id before starting",
+			cosmosChainID, want, evmChainID,
+		)
+	}
+	return nil
 }

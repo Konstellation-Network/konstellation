@@ -6,39 +6,57 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/cosmos/cosmos-sdk/server"
-	"github.com/cosmos/cosmos-sdk/x/genutil"
-	genutiltypes "github.com/cosmos/cosmos-sdk/x/genutil/types"
+	"github.com/cosmos/cosmos-sdk/client"
+	"github.com/cosmos/cosmos-sdk/codec"
+	"github.com/cosmos/cosmos-sdk/types/module"
+	genutilcli "github.com/cosmos/cosmos-sdk/x/genutil/client/cli"
+
+	"github.com/Konstellation-Network/konstellation/app/config"
 )
 
-// withAppDefaultGenesis wraps the SDK `init` command so the genesis it writes
-// carries the chain's own defaults (app.DefaultGenesis) rather than the bare
-// module defaults, which still say "stake" for every denom. Without this a
-// freshly initialised node is not a valid Konstellation genesis until it has
-// been patched by hand.
-func withAppDefaultGenesis(initCmd *cobra.Command, defaultGenesis func() map[string]json.RawMessage) *cobra.Command {
-	sdkRunE := initCmd.RunE
-	initCmd.RunE = func(cmd *cobra.Command, args []string) error {
-		if err := sdkRunE(cmd, args); err != nil {
-			return err
+// initCmd returns the SDK `init` command driven by the chain's own genesis
+// defaults. The SDK builds genesis from BasicManager.DefaultGenesis, which
+// only knows module defaults ("stake" everywhere); handing it a manager whose
+// modules answer with app.DefaultGenesis() means the file it writes, the
+// summary it prints, and `validate-genesis` all agree.
+//
+// --default-denom is rejected unless it names the base denom: the denom is a
+// genesis-time decision (ENGINEERING.md D2), not a per-node flag.
+func initCmd(mm module.BasicManager, defaultNodeHome string, defaultGenesis func() map[string]json.RawMessage) *cobra.Command {
+	gen := defaultGenesis()
+	overridden := make(module.BasicManager, len(mm))
+	for name, b := range mm {
+		if raw, ok := gen[name]; ok {
+			overridden[name] = genesisOverride{AppModuleBasic: b, raw: raw}
+		} else {
+			overridden[name] = b
 		}
+	}
 
-		genFile := server.GetServerContextFromCmd(cmd).Config.GenesisFile()
-		appGenesis, err := genutiltypes.AppGenesisFromFile(genFile)
-		if err != nil {
-			return fmt.Errorf("read genesis written by init: %w", err)
-		}
-
-		appState, err := json.MarshalIndent(defaultGenesis(), "", " ")
-		if err != nil {
-			return fmt.Errorf("marshal app default genesis: %w", err)
-		}
-		appGenesis.AppState = appState
-
-		if err := genutil.ExportGenesisFile(appGenesis, genFile); err != nil {
-			return fmt.Errorf("write genesis: %w", err)
+	cmd := genutilcli.InitCmd(overridden, defaultNodeHome)
+	cmd.PreRunE = func(cmd *cobra.Command, _ []string) error {
+		denom, _ := cmd.Flags().GetString(genutilcli.FlagDefaultBondDenom)
+		if denom != "" && denom != config.BaseDenom {
+			return fmt.Errorf("--%s must be %q: the base denom is fixed at genesis", genutilcli.FlagDefaultBondDenom, config.BaseDenom)
 		}
 		return nil
 	}
-	return initCmd
+	return cmd
+}
+
+// genesisOverride is an AppModuleBasic whose DefaultGenesis is a fixed blob.
+type genesisOverride struct {
+	module.AppModuleBasic
+	raw json.RawMessage
+}
+
+var _ module.HasGenesisBasics = genesisOverride{}
+
+func (g genesisOverride) DefaultGenesis(codec.JSONCodec) json.RawMessage { return g.raw }
+
+func (g genesisOverride) ValidateGenesis(cdc codec.JSONCodec, txCfg client.TxEncodingConfig, data json.RawMessage) error {
+	if v, ok := g.AppModuleBasic.(module.HasGenesisBasics); ok {
+		return v.ValidateGenesis(cdc, txCfg, data)
+	}
+	return nil
 }

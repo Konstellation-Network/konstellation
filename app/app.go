@@ -16,7 +16,6 @@ import (
 	abci "github.com/cometbft/cometbft/abci/types"
 	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
 
-	evmconfig "github.com/Konstellation-Network/konstellation/app/config"
 	dbm "github.com/cosmos/cosmos-db"
 	evmante "github.com/cosmos/evm/ante"
 	antetypes "github.com/cosmos/evm/ante/types"
@@ -126,19 +125,16 @@ import (
 	"github.com/cosmos/cosmos-sdk/x/upgrade"
 	upgradekeeper "github.com/cosmos/cosmos-sdk/x/upgrade/keeper"
 	upgradetypes "github.com/cosmos/cosmos-sdk/x/upgrade/types"
+
+	evmconfig "github.com/Konstellation-Network/konstellation/app/config"
 )
 
 func init() {
-	// manually update the power reduction by replacing micro (u) -> atto (a) evmos
+	// 18-decimal base denom: staking power is counted in whole tokens (1e18 esp)
 	sdk.DefaultPowerReduction = utils.AttoPowerReduction
-
-	defaultNodeHome = evmconfig.MustGetDefaultNodeHome()
 }
 
 const appName = "konstellationd"
-
-// defaultNodeHome default home directories for the application daemon
-var defaultNodeHome string
 
 var (
 	_ runtime.AppI                = (*KonstellationApp)(nil)
@@ -229,6 +225,11 @@ func New(
 		baseAppOptions...,
 	)
 	bApp.SetVersion(version.Version)
+	// A mainnet/testnet node whose app.toml still carries the wrong EIP-155 id
+	// would reject every correctly signed tx and fork on app hash. Refuse to start.
+	if err := evmconfig.ValidateEVMChainID(bApp.ChainID(), evmChainID); err != nil {
+		panic(err)
+	}
 	bApp.SetInterfaceRegistry(interfaceRegistry)
 	bApp.SetTxEncoder(txConfig.TxEncoder())
 
@@ -685,9 +686,10 @@ func New(
 		panic(fmt.Sprintf("failed to register services in module manager: %s", err.Error()))
 	}
 
-	// RegisterUpgradeHandlers is used for registering any on-chain upgrades.
-	// Make sure it's called after `app.ModuleManager` and `app.configurator` are set.
-	app.RegisterUpgradeHandlers()
+	// Upgrade handlers: none until the first post-genesis upgrade exists.
+	// One package per release under app/upgrades/ (ENGINEERING.md §6.1). A
+	// handler registered here for a name that never ships would let a gov
+	// MsgSoftwareUpgrade "succeed" on the old binary instead of halting.
 
 	autocliv1.RegisterQueryServer(app.GRPCQueryRouter(), runtimeservices.NewAutoCLIQueryService(app.ModuleManager.Modules))
 

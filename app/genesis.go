@@ -3,12 +3,13 @@ package app
 import (
 	"encoding/json"
 
-	"github.com/Konstellation-Network/konstellation/app/config"
 	erc20types "github.com/cosmos/evm/x/erc20/types"
 	feemarkettypes "github.com/cosmos/evm/x/feemarket/types"
 	evmtypes "github.com/cosmos/evm/x/vm/types"
 
 	minttypes "github.com/cosmos/cosmos-sdk/x/mint/types"
+
+	"github.com/Konstellation-Network/konstellation/app/config"
 )
 
 // GenesisState of the blockchain is represented here as a map of raw json

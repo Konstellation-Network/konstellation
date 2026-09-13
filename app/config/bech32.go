@@ -1,8 +1,9 @@
 package config
 
 import (
-	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/evm/crypto/hd"
+
+	sdk "github.com/cosmos/cosmos-sdk/types"
 )
 
 const (

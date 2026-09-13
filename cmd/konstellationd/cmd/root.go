@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cast"
 	"github.com/spf13/cobra"
@@ -11,8 +13,6 @@ import (
 	cmtcfg "github.com/cometbft/cometbft/config"
 	cmtcli "github.com/cometbft/cometbft/libs/cli"
 
-	"github.com/Konstellation-Network/konstellation/app"
-	"github.com/Konstellation-Network/konstellation/app/config"
 	dbm "github.com/cosmos/cosmos-db"
 	cosmosevmcmd "github.com/cosmos/evm/client"
 	evmdebug "github.com/cosmos/evm/client/debug"
@@ -23,9 +23,6 @@ import (
 
 	"cosmossdk.io/log/v2"
 	confixcmd "cosmossdk.io/tools/confix/cmd"
-	"github.com/cosmos/cosmos-sdk/store/v2"
-	snapshottypes "github.com/cosmos/cosmos-sdk/store/v2/snapshots/types"
-	storetypes "github.com/cosmos/cosmos-sdk/store/v2/types"
 
 	"github.com/cosmos/cosmos-sdk/baseapp"
 	"github.com/cosmos/cosmos-sdk/client"
@@ -36,6 +33,9 @@ import (
 	"github.com/cosmos/cosmos-sdk/client/snapshot"
 	sdkserver "github.com/cosmos/cosmos-sdk/server"
 	servertypes "github.com/cosmos/cosmos-sdk/server/types"
+	"github.com/cosmos/cosmos-sdk/store/v2"
+	snapshottypes "github.com/cosmos/cosmos-sdk/store/v2/snapshots/types"
+	storetypes "github.com/cosmos/cosmos-sdk/store/v2/types"
 	simtestutil "github.com/cosmos/cosmos-sdk/testutil/sims"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	sdktestutil "github.com/cosmos/cosmos-sdk/types/module/testutil"
@@ -45,6 +45,10 @@ import (
 	txmodule "github.com/cosmos/cosmos-sdk/x/auth/tx/config"
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 	genutilcli "github.com/cosmos/cosmos-sdk/x/genutil/client/cli"
+	genutiltypes "github.com/cosmos/cosmos-sdk/x/genutil/types"
+
+	"github.com/Konstellation-Network/konstellation/app"
+	"github.com/Konstellation-Network/konstellation/app/config"
 )
 
 // NewRootCmd creates a new root command for evmd. It is called once in the
@@ -148,9 +152,11 @@ func NewRootCmd() *cobra.Command {
 func initCometConfig() *cmtcfg.Config {
 	cfg := cmtcfg.DefaultConfig()
 
-	// these values put a higher strain on node memory
-	// cfg.P2P.MaxNumInboundPeers = 100
-	// cfg.P2P.MaxNumOutboundPeers = 40
+	// cosmos/evm v0.7 ships the app-side EVM mempool (Krakatoa) enabled in
+	// app.toml; CometBFT v0.39 then requires mempool.type = "app" in
+	// config.toml or the node refuses to start (ENGINEERING.md §7.3). Keep
+	// the two files consistent at init instead of patching config.toml by hand.
+	cfg.Mempool.Type = cmtcfg.MempoolTypeApp
 
 	return cfg
 }
@@ -164,7 +170,7 @@ func initRootCmd(rootCmd *cobra.Command, evmApp *app.KonstellationApp) {
 		return newApp(l, d, ao)
 	}
 	rootCmd.AddCommand(
-		withAppDefaultGenesis(genutilcli.InitCmd(evmApp.BasicModuleManager, defaultNodeHome), evmApp.DefaultGenesis),
+		initCmd(evmApp.BasicModuleManager, defaultNodeHome, evmApp.DefaultGenesis),
 		genutilcli.Commands(evmApp.TxConfig(), evmApp.BasicModuleManager, defaultNodeHome),
 		cmtcli.NewCompletionCmd(rootCmd, true),
 		evmdebug.Cmd(),
@@ -359,17 +365,33 @@ func appExport(
 // getChainIDFromOpts returns the chain Id from app Opts
 // It first tries to get from the chainId flag, if not available
 // it will load from home
+// getChainIDFromOpts resolves the Cosmos chain-id in priority order:
+// --chain-id flag, client.toml, genesis.json. Upstream stops at client.toml,
+// which `init` leaves empty, so a node started without the flag constructed
+// its app with chain-id "" and failed InitChain. genesis.json is the
+// authoritative value and is what the app must run with.
 func getChainIDFromOpts(appOpts servertypes.AppOptions) (chainID string, err error) {
-	// Get the chain Id from appOpts
 	chainID = cast.ToString(appOpts.Get(flags.FlagChainID))
-	if chainID == "" {
-		// If not available load from home
-		homeDir := cast.ToString(appOpts.Get(flags.FlagHome))
-		chainID, err = utils.GetChainIDFromHome(homeDir)
-		if err != nil {
-			return "", err
-		}
+	if chainID != "" {
+		return chainID, nil
 	}
 
-	return chainID, err
+	homeDir := cast.ToString(appOpts.Get(flags.FlagHome))
+	chainID, err = utils.GetChainIDFromHome(homeDir)
+	if err == nil && chainID != "" {
+		return chainID, nil
+	}
+
+	genFile := filepath.Join(homeDir, "config", "genesis.json")
+	appGenesis, gerr := genutiltypes.AppGenesisFromFile(genFile)
+	if gerr != nil {
+		if err != nil {
+			return "", fmt.Errorf("chain-id: not in flags, client.toml (%v) or genesis (%w)", err, gerr)
+		}
+		return "", fmt.Errorf("chain-id: not in flags or client.toml, and genesis unreadable: %w", gerr)
+	}
+	if appGenesis.ChainID == "" {
+		return "", fmt.Errorf("chain-id: empty in flags, client.toml and %s", genFile)
+	}
+	return appGenesis.ChainID, nil
 }

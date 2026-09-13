@@ -1,0 +1,40 @@
+package config
+
+import "testing"
+
+func TestValidateEVMChainID(t *testing.T) {
+	cases := []struct {
+		name    string
+		chainID string
+		evmID   uint64
+		wantErr bool
+	}{
+		{"mainnet correct", ChainIDMainnet, EVMChainIDMainnet, false},
+		{"mainnet with stale testnet default", ChainIDMainnet, DefaultEVMChainID, true},
+		{"testnet correct", ChainIDTestnet, EVMChainIDTestnet, false},
+		{"testnet with mainnet id", ChainIDTestnet, EVMChainIDMainnet, true},
+		{"unknown network unconstrained", "konstellation-local-1", 424242, false},
+		{"empty chain-id unconstrained", "", EVMChainIDMainnet, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateEVMChainID(tc.chainID, tc.evmID)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("ValidateEVMChainID(%q, %d) err=%v, wantErr=%v", tc.chainID, tc.evmID, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestGovDepositsAreWholeTokens(t *testing.T) {
+	one := kash(1)[0].Amount
+	if got := GovMinDeposit[0].Amount.Quo(one).Int64(); got != 10 {
+		t.Fatalf("min deposit = %d KASH, want 10", got)
+	}
+	if got := GovExpeditedMinDeposit[0].Amount.Quo(one).Int64(); got != 50 {
+		t.Fatalf("expedited min deposit = %d KASH, want 50", got)
+	}
+	if GovMinDeposit[0].Denom != BaseDenom {
+		t.Fatalf("denom = %q, want %q", GovMinDeposit[0].Denom, BaseDenom)
+	}
+}
