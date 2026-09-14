@@ -9,13 +9,16 @@ set -euo pipefail
 
 UPSTREAM=https://github.com/cosmos/evm.git
 MODULE=github.com/cosmos/evm
-HOT_PATHS=(x/vm/ precompiles/ ante/ mempool/)
+# ENGINEERING.md §4.2's documented hot zones. Keep this in sync with that list.
+HOT_PATHS=(x/vm/ x/vm/statedb/ precompiles/)
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 pinned="${PINNED:-$(cd "$ROOT" && go mod edit -json | jq -r --arg m "$MODULE" '.Require[] | select(.Path==$m) | .Version')}"
 [ -n "$pinned" ] || { echo "cannot find $MODULE in go.mod" >&2; exit 2; }
 
+set +e
 latest="$(git ls-remote --tags --refs "$UPSTREAM" | awk '{print $2}' | sed 's#refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
+set -e
 [ -n "$latest" ] || { echo "cannot list upstream tags" >&2; exit 2; }
 
 if [ "$(printf '%s\n%s\n' "$pinned" "$latest" | sort -V | tail -1)" = "$pinned" ]; then
@@ -27,7 +30,16 @@ work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 git clone -q --filter=blob:none --no-checkout "$UPSTREAM" "$work/evm"
 cd "$work/evm"
 tag_date="$(git log -1 --format=%ad --date=short "$latest")"
-pinned_date="$(git log -1 --format=%ad --date=short "$pinned")"
+
+# go.mod can pin a Go pseudo-version (vX.Y.Z-yyyymmddhhmmss-<sha>) instead of a
+# tag; that string isn't a git ref on its own, so probe before trusting it as
+# one and degrade gracefully rather than aborting the whole brief.
+if pinned_date="$(git log -1 --format=%ad --date=short "$pinned" 2>/dev/null)"; then
+  pinned_resolvable=true
+else
+  pinned_resolvable=false
+  pinned_date="unresolvable"
+fi
 
 {
   echo "## cosmos/evm $latest released ($tag_date) — pinned $pinned ($pinned_date)"
@@ -38,15 +50,27 @@ pinned_date="$(git log -1 --format=%ad --date=short "$pinned")"
   gh release view "$latest" -R cosmos/evm --json body --jq .body 2>/dev/null | sed 's/^/> /' || echo "> (none)"
   echo
   echo "### Published advisories since $pinned_date"
-  adv="$(gh api "repos/cosmos/evm/security-advisories?state=published&per_page=20" --jq ".[] | select(.published_at >= \"$pinned_date\") | \"- \(.published_at[:10]) **\(.ghsa_id)** (\(.severity)): \(.summary) — affected: \(.vulnerabilities[0].vulnerable_version_range)\"" 2>/dev/null || true)"
+  if [ "$pinned_resolvable" = true ]; then
+    adv="$(gh api "repos/cosmos/evm/security-advisories?state=published&per_page=20" --jq ".[] | select(.published_at >= \"$pinned_date\") | \"- \(.published_at[:10]) **\(.ghsa_id)** (\(.severity)): \(.summary) — affected: \(.vulnerabilities[0].vulnerable_version_range)\"" 2>/dev/null || true)"
+  else
+    adv="$(gh api "repos/cosmos/evm/security-advisories?state=published&per_page=20" --jq ".[] | \"- \(.published_at[:10]) **\(.ghsa_id)** (\(.severity)): \(.summary) — affected: \(.vulnerabilities[0].vulnerable_version_range)\"" 2>/dev/null || true)"
+  fi
   [ -n "$adv" ] && echo "$adv" || echo "- none published (does not mean none fixed — see §4.2)"
   echo
   echo "### Commits $pinned..$latest"
-  git log --oneline "$pinned..$latest" | sed 's/^/- /'
+  if [ "$pinned_resolvable" = true ]; then
+    git log --oneline "$pinned..$latest" | sed 's/^/- /'
+  else
+    echo "- cannot resolve pinned version $pinned as a git ref (e.g. a Go pseudo-version); commit list unavailable"
+  fi
   echo
   echo "### Hot-zone diff stat (${HOT_PATHS[*]})"
   echo '```'
-  git diff --stat "$pinned..$latest" -- "${HOT_PATHS[@]}" || true
+  if [ "$pinned_resolvable" = true ]; then
+    git diff --stat "$pinned..$latest" -- "${HOT_PATHS[@]}" || true
+  else
+    echo "(cannot resolve pinned version $pinned as a git ref; diff stat unavailable)"
+  fi
   echo '```'
   echo
   echo "### Review checklist"
