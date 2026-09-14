@@ -922,13 +922,31 @@ func (app *KonstellationApp) DefaultGenesis() map[string]json.RawMessage {
 	genesis[feemarkettypes.ModuleName] = app.appCodec.MustMarshalJSON(NewFeeMarketGenesisState())
 
 	// SDK modules default to "stake"; switch them to the base denom.
+	// MaxValidators/MinCommissionRate are D10 overrides; UnbondingTime matches
+	// the SDK default but is set explicitly since it is now a recorded decision.
 	stakingGen := stakingtypes.DefaultGenesisState()
 	stakingGen.Params.BondDenom = evmconfig.BaseDenom
+	stakingGen.Params.UnbondingTime = evmconfig.StakingUnbondingTime
+	stakingGen.Params.MaxValidators = evmconfig.StakingMaxValidators
+	stakingGen.Params.MinCommissionRate = evmconfig.StakingMinCommissionRate
 	genesis[stakingtypes.ModuleName] = app.appCodec.MustMarshalJSON(stakingGen)
+
+	// D10: downtime is lowered from the SDK default; double-sign is set
+	// explicitly to record the decision even though it matches the default.
+	slashingGen := slashingtypes.DefaultGenesisState()
+	slashingGen.Params.SlashFractionDoubleSign = evmconfig.SlashFractionDoubleSign
+	slashingGen.Params.SlashFractionDowntime = evmconfig.SlashFractionDowntime
+	genesis[slashingtypes.ModuleName] = app.appCodec.MustMarshalJSON(slashingGen)
 
 	govGen := govv1.DefaultGenesisState()
 	govGen.Params.MinDeposit = evmconfig.GovMinDeposit
 	govGen.Params.ExpeditedMinDeposit = evmconfig.GovExpeditedMinDeposit
+	// D11: voting period, quorum, threshold. ExpeditedVotingPeriod, VetoThreshold
+	// and ExpeditedThreshold stay at the SDK default — not named by D11.
+	votingPeriod := evmconfig.GovVotingPeriod
+	govGen.Params.VotingPeriod = &votingPeriod
+	govGen.Params.Quorum = evmconfig.GovQuorum
+	govGen.Params.Threshold = evmconfig.GovThreshold
 	genesis[govtypes.ModuleName] = app.appCodec.MustMarshalJSON(govGen)
 
 	bankGen := banktypes.DefaultGenesisState()
