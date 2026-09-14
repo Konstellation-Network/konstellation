@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"time"
 
 	erc20types "github.com/cosmos/evm/x/erc20/types"
 	evmtypes "github.com/cosmos/evm/x/vm/types"
@@ -83,11 +84,58 @@ var (
 	GovExpeditedMinDeposit = kash(50)
 )
 
+// Governance voting period, quorum and threshold (ENGINEERING.md D11, decided
+// 2026-09-14): 3 days at launch, per §11's "3-5 day, lengthen as the set
+// decentralises" recommendation — the short end, since a small self-run
+// validator set can review and react fast. Quorum and threshold are the SDK/
+// Cosmos Hub defaults (33.4% / 50%), set explicitly here so the value is a
+// recorded decision rather than an incidental default.
+var (
+	GovVotingPeriod = 3 * 24 * time.Hour
+	GovQuorum       = "0.334"
+	GovThreshold    = "0.5"
+)
+
+// FeeMarketMinGasMultiplier (decided 2026-09-14): kept at the cosmos/evm
+// default (0.5 / 50%). Not itself a D10 or D11 item despite STATUS.md flagging
+// it alongside them — it's an anti-manipulation floor on the feemarket
+// module's recorded per-block gasWanted (used to update the EIP-1559 base
+// fee), not a per-tx charge: at the end of each block,
+// gasWanted = max(gasWanted * MinGasMultiplier, gasUsed), which stops a block
+// proposer from reporting a high gasWanted with artificially low gasUsed to
+// manipulate the base-fee adjustment. No Konstellation-specific reason to
+// deviate from the upstream default.
+var FeeMarketMinGasMultiplier = math.LegacyNewDecWithPrec(50, 2)
+
 // kash converts a whole-KASH amount to base units (esp).
 func kash(n int64) sdk.Coins {
 	one := math.NewIntWithDecimal(1, int(Decimals))
 	return sdk.NewCoins(sdk.NewCoin(BaseDenom, one.MulRaw(n)))
 }
+
+// Staking params (ENGINEERING.md D10, decided 2026-09-14): DPoS with a capped
+// active set, not open validation. UnbondingTime matches the Cosmos Hub
+// convention (SDK default); MaxValidators and MinCommissionRate are explicit
+// Konstellation overrides of the SDK defaults (100 validators, 0% floor).
+const (
+	StakingUnbondingTime = 21 * 24 * time.Hour
+	StakingMaxValidators = 30
+)
+
+// StakingMinCommissionRate is the chain-wide floor on validator commission:
+// no validator may advertise less, so delegation can't race to the bottom on
+// subsidized 0% offers.
+var StakingMinCommissionRate = math.LegacyNewDecWithPrec(5, 2) // 5%
+
+// Slashing params (ENGINEERING.md D10, decided 2026-09-14).
+// SlashFractionDoubleSign matches the SDK default (5%) but is set explicitly
+// here so the value is a recorded decision, not an incidental default.
+// SlashFractionDowntime is lowered from the SDK default (1%) to 0.01%:
+// downtime is treated as an operational mistake, not an attack.
+var (
+	SlashFractionDoubleSign = math.LegacyNewDecWithPrec(5, 2)
+	SlashFractionDowntime   = math.LegacyNewDecWithPrec(1, 4)
+)
 
 // Cosmos chain-id strings (ENGINEERING.md §1).
 const (

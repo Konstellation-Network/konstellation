@@ -62,6 +62,11 @@ func NewMintGenesisState() *minttypes.GenesisState {
 //
 // EIP-1559 base fee stays ENABLED (upstream evmd disables it for its example
 // chain). Base fee disposition — distribute vs burn — is open decision D5.
+// MinGasMultiplier (decided 2026-09-14): kept at the cosmos/evm default,
+// see config.FeeMarketMinGasMultiplier.
 func NewFeeMarketGenesisState() *feemarkettypes.GenesisState {
-	return feemarkettypes.DefaultGenesisState()
+	feeMarketGenState := feemarkettypes.DefaultGenesisState()
+	feeMarketGenState.Params.MinGasMultiplier = config.FeeMarketMinGasMultiplier
+
+	return feeMarketGenState
 }
