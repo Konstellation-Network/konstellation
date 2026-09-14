@@ -96,6 +96,17 @@ var (
 	GovThreshold    = "0.5"
 )
 
+// FeeMarketMinGasMultiplier (decided 2026-09-14): kept at the cosmos/evm
+// default (0.5 / 50%). Not itself a D10 or D11 item despite STATUS.md flagging
+// it alongside them — it's an anti-manipulation floor on the feemarket
+// module's recorded per-block gasWanted (used to update the EIP-1559 base
+// fee), not a per-tx charge: at the end of each block,
+// gasWanted = max(gasWanted * MinGasMultiplier, gasUsed), which stops a block
+// proposer from reporting a high gasWanted with artificially low gasUsed to
+// manipulate the base-fee adjustment. No Konstellation-specific reason to
+// deviate from the upstream default.
+var FeeMarketMinGasMultiplier = math.LegacyNewDecWithPrec(50, 2)
+
 // kash converts a whole-KASH amount to base units (esp).
 func kash(n int64) sdk.Coins {
 	one := math.NewIntWithDecimal(1, int(Decimals))
