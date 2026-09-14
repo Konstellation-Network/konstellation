@@ -34,8 +34,15 @@ jobs:
 
   source:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    concurrency:
+      group: vuln-source
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -43,4 +50,16 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest
-      - run: make vulncheck
+      - run: make vulncheck 2>&1 | tee vulncheck.log
+      # A red nightly run that nobody reads is the failure mode §4.3 warns
+      # about. Turn it into an issue someone owns.
+      - name: Open an issue on failure
+        if: failure() || cancelled()
+        run: |
+          scripts/gh-failure-body.sh \
+            "Failed on $(date -u +%Y-%m-%d)." \
+            vulncheck.log \
+            "Bump the dependency, or add a justified entry to .govulncheck-allowlist and ENGINEERING.md §4.1.1." > body.md
+          scripts/gh-upsert-issue.sh vulncheck \
+            "Nightly govulncheck failure (ENGINEERING.md §4.3)" \
+            "nightly govulncheck failing (ENGINEERING.md §4.3)" body.md
