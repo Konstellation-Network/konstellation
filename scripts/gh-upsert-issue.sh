@@ -14,7 +14,7 @@ body_file="$4"
 
 gh label create "$label" --color B60205 --description "$label_description" 2>/dev/null || true
 
-existing="$(gh issue list --label "$label" --state all --json number,title,state \
+existing="$(gh issue list --label "$label" --state all --limit 1000 --json number,title,state \
   | jq -r --arg t "$title" '[.[] | select(.title == $t)][0] | if . then "\(.number)\t\(.state)" else empty end')"
 
 if [ -n "$existing" ]; then

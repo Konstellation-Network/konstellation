@@ -22,7 +22,27 @@ latest="$(gh api "repos/$REPO/tags" --paginate --jq '.[].name' 2>/dev/null | gre
 set -e
 [ -n "$latest" ] || { echo "cannot list upstream tags" >&2; exit 2; }
 
-if [ "$(printf '%s\n%s\n' "$pinned" "$latest" | sort -V | tail -1)" = "$pinned" ]; then
+# Surface the resolved tag as a step output so the workflow doesn't have to
+# scrape it back out of the brief's markdown header.
+[ -n "${GITHUB_OUTPUT:-}" ] && echo "latest=$latest" >> "$GITHUB_OUTPUT"
+
+# go.mod can pin a Go pseudo-version (vX.Y.Z-yyyymmddhhmmss-<sha>) instead of a
+# tag. `sort -V` doesn't know semver precedence, so a plain string sort ranks
+# a pseudo-version's release-plus-suffix string ABOVE the plain tag it
+# actually predates (e.g. "v0.7.3-0.2026...-abc" sorts after "v0.7.3"),
+# which would make an unreleased commit look newer than a real, reviewable
+# tag and silently skip it. Per semver, X.Y.Z-anything < X.Y.Z, so compare
+# the release core first and only treat an exact, suffix-free match as
+# up to date.
+pinned_core="${pinned%%-*}"
+newest_core="$(printf '%s\n%s\n' "$pinned_core" "$latest" | sort -V | tail -1)"
+up_to_date=false
+if [ "$pinned_core" != "$latest" ] && [ "$newest_core" = "$pinned_core" ]; then
+  up_to_date=true   # pinned's release line is strictly newer than the latest tag
+elif [ "$pinned_core" = "$latest" ] && [ "$pinned" = "$latest" ]; then
+  up_to_date=true   # pinned IS the latest tag exactly, no pre-release/pseudo suffix
+fi
+if [ "$up_to_date" = true ]; then
   echo "up to date: pinned $pinned, latest $latest"
   exit 0
 fi
@@ -45,17 +65,16 @@ if [ -z "$pinned_json" ] && [[ "$pinned" =~ -([0-9a-f]{12})$ ]]; then
   pinned_json="$(fetch_commit "${BASH_REMATCH[1]}")" || true
 fi
 
+pinned_sha=""
 if [ -n "$pinned_json" ]; then
-  pinned_resolvable=true
   pinned_sha="$(echo "$pinned_json" | jq -r .sha)"
   pinned_date="$(echo "$pinned_json" | jq -r '.commit.committer.date[:10]')"
 else
-  pinned_resolvable=false
   pinned_date="unresolvable"
 fi
 
 compare_json=""
-if [ "$pinned_resolvable" = true ]; then
+if [ -n "$pinned_sha" ]; then
   compare_json="$(gh api "repos/$REPO/compare/${pinned_sha}...${latest_sha}" 2>/dev/null)" || compare_json=""
 fi
 
@@ -68,11 +87,10 @@ fi
   gh release view "$latest" -R "$REPO" --json body --jq .body 2>/dev/null | sed 's/^/> /' || echo "> (none)"
   echo
   echo "### Published advisories since $pinned_date"
-  if [ "$pinned_resolvable" = true ]; then
-    adv="$(gh api "repos/$REPO/security-advisories?state=published&per_page=20" --jq ".[] | select(.published_at >= \"$pinned_date\") | \"- \(.published_at[:10]) **\(.ghsa_id)** (\(.severity)): \(.summary) — affected: \(.vulnerabilities[0].vulnerable_version_range)\"" 2>/dev/null || true)"
-  else
-    adv="$(gh api "repos/$REPO/security-advisories?state=published&per_page=20" --jq ".[] | \"- \(.published_at[:10]) **\(.ghsa_id)** (\(.severity)): \(.summary) — affected: \(.vulnerabilities[0].vulnerable_version_range)\"" 2>/dev/null || true)"
-  fi
+  since="$([ -n "$pinned_sha" ] && echo "$pinned_date" || echo "")"
+  adv="$(gh api "repos/$REPO/security-advisories?state=published&per_page=20" 2>/dev/null | jq -r --arg since "$since" \
+    '.[] | select($since == "" or .published_at >= $since) | "- \(.published_at[:10]) **\(.ghsa_id)** (\(.severity)): \(.summary) — affected: \(.vulnerabilities[0].vulnerable_version_range)"' \
+    2>/dev/null || true)"
   [ -n "$adv" ] && echo "$adv" || echo "- none published (does not mean none fixed — see §4.2)"
   echo
   echo "### Commits $pinned..$latest"
@@ -111,7 +129,7 @@ fi
   echo '```'
   echo
   echo "### Review checklist"
-  echo "- [ ] \`git -C ~/src/evm-reference diff $pinned..$latest -- x/vm/ precompiles/\` read in full"
+  echo "- [ ] \`git -C ~/src/evm-reference diff $pinned..$latest -- ${HOT_PATHS[*]}\` read in full"
   echo "- [ ] go.mod bumped, \`make verify-deps\`, \`make test-unit\`, \`make vulncheck\` green"
   echo "- [ ] ENGINEERING.md §3 version matrix and §4.1 advisory table updated"
   echo "- [ ] state-breaking? → coordinated upgrade plan (§9.4)"

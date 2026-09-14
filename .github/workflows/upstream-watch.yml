@@ -32,7 +32,7 @@ jobs:
         id: check
         run: |
           set +e
-          scripts/upstream-check.sh > brief.md
+          scripts/upstream-check.sh > brief.md 2>&1
           code=$?
           set -e
           echo "code=$code" >> "$GITHUB_OUTPUT"
@@ -41,24 +41,16 @@ jobs:
       - name: Open or update the review issue
         if: steps.check.outputs.code == '10'
         run: |
-          latest="$(sed -n '1s/^## cosmos\/evm \(v[0-9.]*\) .*/\1/p' brief.md)"
-          title="cosmos/evm $latest released — review required (§4.2)"
+          title="cosmos/evm ${{ steps.check.outputs.latest }} released — review required (§4.2)"
           scripts/gh-upsert-issue.sh upstream-release \
             "New cosmos/evm tag; review per ENGINEERING.md §4.2" \
             "$title" brief.md
       - name: Open an issue if the watcher itself is broken
-        if: failure()
+        if: failure() || cancelled()
         run: |
-          title="upstream-watch is failing (ENGINEERING.md §17)"
-          {
-            echo "cosmos/evm release tracking may be silently stalled until this is fixed."
-            echo
-            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            echo
-            echo '```'
-            cat brief.md 2>/dev/null || echo "(brief.md not found — the failure happened before scripts/upstream-check.sh produced output)"
-            echo '```'
-          } > watch-failure.md
+          scripts/gh-failure-body.sh \
+            "cosmos/evm release tracking may be silently stalled until this is fixed." \
+            brief.md > watch-failure.md
           scripts/gh-upsert-issue.sh upstream-watch-failure \
             "upstream-watch.yml is failing; releases may go unnoticed (ENGINEERING.md §17)" \
-            "$title" watch-failure.md
+            "upstream-watch is failing (ENGINEERING.md §17)" watch-failure.md
