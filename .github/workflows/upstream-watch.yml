@@ -1,0 +1,48 @@
+# ENGINEERING.md §4.2 / §17: watch cosmos/evm releases.
+# Daily: if upstream has a tag newer than go.mod's pin, open one issue per
+# release (label upstream-release) with the review brief from
+# scripts/upstream-check.sh. Idempotent: re-runs update the existing issue.
+name: upstream-watch
+on:
+  schedule:
+    - cron: "23 */6 * * *"   # four times a day; §4.2 target is 24h from tag to ready
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Compare pinned cosmos/evm with upstream
+        id: check
+        run: |
+          set +e
+          scripts/upstream-check.sh > brief.md
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          cat brief.md
+          [ "$code" = 0 ] || [ "$code" = 10 ]
+      - name: Open or update the review issue
+        if: steps.check.outputs.code == '10'
+        run: |
+          latest="$(sed -n '1s/^## cosmos\/evm \(v[0-9.]*\) .*/\1/p' brief.md)"
+          title="cosmos/evm $latest released — review required (§4.2)"
+          existing="$(gh issue list --label upstream-release --state all --search "in:title \"$latest\"" --json number --jq '.[0].number')"
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --body-file brief.md
+            echo "updated #$existing"
+          else
+            gh label create upstream-release --color B60205 --description "New cosmos/evm tag; review per ENGINEERING.md §4.2" 2>/dev/null || true
+            gh issue create --title "$title" --label upstream-release --body-file brief.md
+          fi

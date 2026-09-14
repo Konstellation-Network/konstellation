@@ -47,6 +47,14 @@ make test-unit
 ./local_node.sh -y    # dev chain; JSON-RPC on :8545
 ```
 
+## Upstream watch
+
+`.github/workflows/upstream-watch.yml` runs `scripts/upstream-check.sh` four times a
+day. When cosmos/evm publishes a tag newer than `go.mod`'s pin it opens an issue
+(label `upstream-release`) with the release notes, published advisories, commit
+list and hot-zone diff stat. The nightly `govulncheck` job opens an issue (label
+`vulncheck`) on failure. Both need an owner (ENGINEERING.md §17).
+
 ## Bumping `cosmos/evm`
 
 Treat every patch tag as a security release (§4.2). Diff `x/vm/`, `x/vm/statedb/`,
