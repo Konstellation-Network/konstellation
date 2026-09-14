@@ -48,15 +48,24 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest
-      - run: make vulncheck 2>&1 | tee vulncheck.log; exit ${PIPESTATUS[0]}
+      - run: make vulncheck 2>&1 | tee vulncheck.log
       # A red nightly run that nobody reads is the failure mode §4.3 warns
       # about. Turn it into an issue someone owns.
       - name: Open an issue on failure
         if: failure()
         run: |
-          title="nightly govulncheck failed $(date -u +%Y-%m-%d)"
-          if [ -z "$(gh issue list --label vulncheck --state open --search "in:title \"$title\"" --json number --jq '.[0].number')" ]; then
+          title="nightly govulncheck failing (ENGINEERING.md §4.3)"
+          if [ -z "$(gh issue list --label vulncheck --state open --json number,title --jq --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')" ]; then
             gh label create vulncheck --color B60205 --description "Nightly govulncheck failure (ENGINEERING.md §4.3)" 2>/dev/null || true
-            { echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"; echo; echo '```'; tail -60 vulncheck.log; echo '```'; echo; echo "Bump the dependency, or add a justified entry to .govulncheck-allowlist and ENGINEERING.md §4.1.1."; } > body.md
+            {
+              echo "Failed on $(date -u +%Y-%m-%d)."
+              echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              echo
+              echo '```'
+              tail -60 vulncheck.log 2>/dev/null || echo "(vulncheck.log not found — the failure happened before the scan ran, e.g. checkout, setup-go, or govulncheck install)"
+              echo '```'
+              echo
+              echo "Bump the dependency, or add a justified entry to .govulncheck-allowlist and ENGINEERING.md §4.1.1."
+            } > body.md
             gh issue create --title "$title" --label vulncheck --body-file body.md
           fi

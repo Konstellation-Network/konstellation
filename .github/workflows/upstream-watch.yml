@@ -38,7 +38,7 @@ jobs:
         run: |
           latest="$(sed -n '1s/^## cosmos\/evm \(v[0-9.]*\) .*/\1/p' brief.md)"
           title="cosmos/evm $latest released — review required (§4.2)"
-          existing="$(gh issue list --label upstream-release --state all --search "in:title \"$latest\"" --json number --jq '.[0].number')"
+          existing="$(gh issue list --label upstream-release --state all --json number,title --jq --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')"
           if [ -n "$existing" ]; then
             gh issue edit "$existing" --body-file brief.md
             echo "updated #$existing"
