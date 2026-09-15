@@ -335,6 +335,8 @@ func New(
 		evmaddress.NewEvmCodec(sdk.GetConfig().GetBech32ConsensusAddrPrefix()),
 	)
 
+	// D4: stock x/mint with the √bonded issuance curve as its MintFn
+	// (app/issuance.go). No custom module.
 	app.MintKeeper = mintkeeper.NewKeeper(
 		appCodec,
 		runtime.NewKVStoreService(keys[minttypes.StoreKey]),
@@ -343,6 +345,7 @@ func New(
 		app.BankKeeper,
 		authtypes.FeeCollectorName,
 		authAddr,
+		mintkeeper.WithMintFn(NewSqrtBondedMintFn(app.StakingKeeper)),
 	)
 
 	app.DistrKeeper = distrkeeper.NewKeeper(
@@ -847,9 +850,25 @@ func (app *KonstellationApp) BeginBlocker(ctx sdk.Context) (sdk.BeginBlock, erro
 	return app.ModuleManager.BeginBlock(ctx)
 }
 
-// EndBlocker application updates every end block
+// EndBlocker application updates every end block.
+//
+// The D5 base-fee burn runs first: it must see this block's base fee (which
+// feemarket's EndBlocker leaves alone — the next one is computed in
+// BeginBlock) and must empty the base-fee share of the fee collector before
+// x/distribution sweeps it at the next BeginBlock. See feeburn.go.
 func (app *KonstellationApp) EndBlocker(ctx sdk.Context) (sdk.EndBlock, error) {
-	return app.ModuleManager.EndBlock(ctx)
+	// Own event manager: ModuleManager.EndBlock installs a fresh one and only
+	// returns what it collected, so anything emitted on ctx here would be lost.
+	burnCtx := ctx.WithEventManager(sdk.NewEventManager())
+	if err := burnBaseFee(burnCtx, app.BankKeeper, app.FeeMarketKeeper); err != nil {
+		return sdk.EndBlock{}, err
+	}
+	res, err := app.ModuleManager.EndBlock(ctx)
+	if err != nil {
+		return res, err
+	}
+	res.Events = append(burnCtx.EventManager().ABCIEvents(), res.Events...)
+	return res, nil
 }
 
 func (app *KonstellationApp) FinalizeBlock(req *abci.RequestFinalizeBlock) (res *abci.ResponseFinalizeBlock, err error) {
