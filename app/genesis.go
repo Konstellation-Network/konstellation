@@ -85,7 +85,7 @@ func NewMintGenesisState() *minttypes.GenesisState {
 // NewFeeMarketGenesisState returns the default genesis state for the feemarket module.
 //
 // EIP-1559 base fee stays ENABLED (upstream evmd disables it for its example
-// chain). Base fee disposition — distribute vs burn — is open decision D5.
+// chain). The base fee is burned (D5, decided 2026-09-15; app/feeburn.go).
 // MinGasMultiplier (decided 2026-09-14): kept at the cosmos/evm default,
 // see config.FeeMarketMinGasMultiplier.
 func NewFeeMarketGenesisState() *feemarkettypes.GenesisState {

@@ -852,22 +852,35 @@ func (app *KonstellationApp) BeginBlocker(ctx sdk.Context) (sdk.BeginBlock, erro
 
 // EndBlocker application updates every end block.
 //
-// The D5 base-fee burn runs first: it must see this block's base fee (which
-// feemarket's EndBlocker leaves alone — the next one is computed in
-// BeginBlock) and must empty the base-fee share of the fee collector before
-// x/distribution sweeps it at the next BeginBlock. See feeburn.go.
+// The D5 base-fee burn (feeburn.go) runs *after* the module EndBlockers, for
+// one reason: x/bank's EndBlocker is where virtually-collected fees are
+// credited to the fee collector's real balance. Virtual fee collection is
+// off today (see the EnableVirtualFeeCollection note in New) but ships with
+// BlockSTM, and a burn that ran before it would see only Cosmos-tx fees,
+// clamp, and quietly leak the EVM base-fee share to validators. Running last
+// is correct in both modes. It is still before x/distribution, which sweeps
+// the collector at the next BeginBlock.
+//
+// The base fee is snapshotted before the modules run: feemarket's EndBlocker
+// does not touch it (the next one is computed in BeginBlock), but a gov
+// proposal executing in x/gov's EndBlocker can change feemarket params in
+// the same block, and every tx in this block was checked against the value
+// that was in force when it executed.
 func (app *KonstellationApp) EndBlocker(ctx sdk.Context) (sdk.EndBlock, error) {
-	// Own event manager: ModuleManager.EndBlock installs a fresh one and only
-	// returns what it collected, so anything emitted on ctx here would be lost.
-	burnCtx := ctx.WithEventManager(sdk.NewEventManager())
-	if err := burnBaseFee(burnCtx, app.BankKeeper, app.FeeMarketKeeper); err != nil {
-		return sdk.EndBlock{}, err
-	}
+	burnInput := snapshotBaseFee(ctx, app.FeeMarketKeeper)
+
 	res, err := app.ModuleManager.EndBlock(ctx)
 	if err != nil {
 		return res, err
 	}
-	res.Events = append(burnCtx.EventManager().ABCIEvents(), res.Events...)
+
+	// Own event manager: ModuleManager.EndBlock only returns what it
+	// collected on the manager it installed.
+	burnCtx := ctx.WithEventManager(sdk.NewEventManager())
+	if err := burnBaseFee(burnCtx, app.BankKeeper, burnInput); err != nil {
+		return sdk.EndBlock{}, err
+	}
+	res.Events = append(res.Events, burnCtx.EventManager().ABCIEvents()...)
 	return res, nil
 }
 

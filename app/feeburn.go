@@ -4,6 +4,8 @@ import (
 	"context"
 	"strconv"
 
+	feemarkettypes "github.com/cosmos/evm/x/feemarket/types"
+
 	"cosmossdk.io/math"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -29,8 +31,8 @@ import (
 // (Σ tx GasUsed, failed txs included) that x/feemarket's EndBlock feeds into
 // the next base fee, so "what the base fee is charged on" and "what is burned"
 // are the same number. The base fee is set in feemarket's BeginBlock and is
-// constant for the block, so reading it in EndBlock is the fee every tx in
-// the block was checked against.
+// constant for the block; it is snapshotted before the module EndBlockers run
+// (see app.EndBlocker for the ordering and why the burn itself runs after them).
 //
 // Known imprecisions, both leaving more with validators rather than less:
 //   - a Cosmos tx pays for gasWanted but only baseFee × gasUsed is burned; the
@@ -47,9 +49,22 @@ type feeBurnBank interface {
 	BurnCoins(ctx context.Context, moduleName string, amt sdk.Coins) error
 }
 
-// feeBurnBaseFee is the slice of x/feemarket the burn needs.
-type feeBurnBaseFee interface {
-	GetBaseFee(ctx sdk.Context) math.LegacyDec
+// feeMarketParams is the slice of x/feemarket the burn needs.
+type feeMarketParams interface {
+	GetParams(ctx sdk.Context) feemarkettypes.Params
+}
+
+// snapshotBaseFee returns the base fee every tx in this block was charged
+// against, or nil when there is none: feemarket's NoBaseFee, or a height
+// below EnableHeight — the Cosmos fee checker treats the base fee as 0 there
+// while GetBaseFee would still return the stored value, and burning it would
+// eat validator tips (PR #5 review).
+func snapshotBaseFee(ctx sdk.Context, fm feeMarketParams) math.LegacyDec {
+	p := fm.GetParams(ctx)
+	if !p.IsBaseFeeEnabled(ctx.BlockHeight()) {
+		return math.LegacyDec{}
+	}
+	return p.BaseFee
 }
 
 const (
@@ -70,9 +85,9 @@ func BaseFeeBurnAmount(baseFee math.LegacyDec, blockGasUsed uint64) math.Int {
 }
 
 // burnBaseFee burns baseFee × BlockGasUsed of the base denom from the fee
-// collector, clamped to what the collector actually holds.
-func burnBaseFee(ctx sdk.Context, bank feeBurnBank, feemarket feeBurnBaseFee) error {
-	baseFee := feemarket.GetBaseFee(ctx)
+// collector, clamped to what the collector actually holds. baseFee is the
+// value from snapshotBaseFee, taken before the module EndBlockers ran.
+func burnBaseFee(ctx sdk.Context, bank feeBurnBank, baseFee math.LegacyDec) error {
 	gasUsed := ctx.BlockGasUsed()
 	want := BaseFeeBurnAmount(baseFee, gasUsed)
 	if !want.IsPositive() {

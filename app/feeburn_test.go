@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	feemarkettypes "github.com/cosmos/evm/x/feemarket/types"
+
 	"cosmossdk.io/log/v2"
 	"cosmossdk.io/math"
 
@@ -30,15 +32,42 @@ func (b *fakeBank) BurnCoins(_ context.Context, module string, amt sdk.Coins) er
 	return nil
 }
 
-type fakeFeemarket struct{ baseFee math.LegacyDec }
+type fakeFeemarket struct{ params feemarkettypes.Params }
 
-func (f fakeFeemarket) GetBaseFee(sdk.Context) math.LegacyDec { return f.baseFee }
+func (f fakeFeemarket) GetParams(sdk.Context) feemarkettypes.Params { return f.params }
 
 func burnCtx(gasUsed uint64) sdk.Context {
 	return sdk.Context{}.
 		WithLogger(log.NewNopLogger()).
 		WithEventManager(sdk.NewEventManager()).
+		WithBlockHeight(100).
 		WithBlockGasUsed(gasUsed)
+}
+
+func TestSnapshotBaseFee(t *testing.T) {
+	gwei := math.LegacyNewDec(1_000_000_000)
+	base := feemarkettypes.DefaultParams()
+	base.BaseFee = gwei
+	cases := []struct {
+		name string
+		mut  func(*feemarkettypes.Params)
+		want math.LegacyDec
+	}{
+		{"enabled", func(*feemarkettypes.Params) {}, gwei},
+		{"NoBaseFee", func(p *feemarkettypes.Params) { p.NoBaseFee = true }, math.LegacyDec{}},
+		{"before EnableHeight: fee checker charged 0, so burn 0", func(p *feemarkettypes.Params) { p.EnableHeight = 101 }, math.LegacyDec{}},
+		{"at EnableHeight", func(p *feemarkettypes.Params) { p.EnableHeight = 100 }, gwei},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := base
+			tc.mut(&p)
+			got := snapshotBaseFee(burnCtx(0), fakeFeemarket{p})
+			if got.IsNil() != tc.want.IsNil() || (!got.IsNil() && !got.Equal(tc.want)) {
+				t.Fatalf("got %v want %v", got, tc.want)
+			}
+		})
+	}
 }
 
 func TestBaseFeeBurnAmount(t *testing.T) {
@@ -70,7 +99,7 @@ func TestBurnBaseFee(t *testing.T) {
 	t.Run("burns baseFee × gasUsed from the fee collector", func(t *testing.T) {
 		bank := &fakeBank{balance: math.NewInt(100_000_000_000_000)} // 100k gwei: covers fee + tip
 		ctx := burnCtx(21_000)
-		if err := burnBaseFee(ctx, bank, fakeFeemarket{gwei}); err != nil {
+		if err := burnBaseFee(ctx, bank, gwei); err != nil {
 			t.Fatal(err)
 		}
 		if bank.module != authtypes.FeeCollectorName {
@@ -92,7 +121,7 @@ func TestBurnBaseFee(t *testing.T) {
 	t.Run("clamps to collector balance and says so", func(t *testing.T) {
 		bank := &fakeBank{balance: math.NewInt(5)}
 		ctx := burnCtx(21_000)
-		if err := burnBaseFee(ctx, bank, fakeFeemarket{gwei}); err != nil {
+		if err := burnBaseFee(ctx, bank, gwei); err != nil {
 			t.Fatal(err)
 		}
 		if !bank.burned.AmountOf(config.BaseDenom).Equal(math.NewInt(5)) || !bank.balance.IsZero() {
@@ -122,7 +151,7 @@ func TestBurnBaseFee(t *testing.T) {
 		} {
 			bank := &fakeBank{balance: tc.bal}
 			ctx := burnCtx(tc.gas)
-			if err := burnBaseFee(ctx, bank, fakeFeemarket{tc.fee}); err != nil {
+			if err := burnBaseFee(ctx, bank, tc.fee); err != nil {
 				t.Fatal(err)
 			}
 			if bank.burned != nil || len(ctx.EventManager().Events()) != 0 {
