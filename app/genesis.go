@@ -10,6 +10,7 @@ import (
 	minttypes "github.com/cosmos/cosmos-sdk/x/mint/types"
 
 	"github.com/Konstellation-Network/konstellation/app/config"
+	"github.com/Konstellation-Network/konstellation/app/preinstalls"
 )
 
 // GenesisState of the blockchain is represented here as a map of raw json
@@ -24,14 +25,23 @@ type GenesisState map[string]json.RawMessage
 // NewEVMGenesisState returns the default genesis state for the EVM module.
 //
 // Sets the base denom (native 18 decimals, so extended denom == base denom and
-// x/precisebank is not involved), enables all static precompiles, and includes
-// the upstream default preinstalls.
+// x/precisebank is not involved), enables all static precompiles, and installs
+// the upstream default preinstalls (Create2 factory, Multicall3, Permit2, Safe
+// singleton factory, EIP-2935) plus Konstellation's own: ERC-4337 EntryPoint
+// v0.7 and v0.8 and the hardhat-deploy/Defender Create2Deployer, all at their
+// canonical mainnet addresses (ENGINEERING.md §6.3), bytecode pinned in
+// `contracts` and verified against its codeHash on load.
 func NewEVMGenesisState() *evmtypes.GenesisState {
 	evmGenState := evmtypes.DefaultGenesisState()
 	evmGenState.Params.EvmDenom = config.BaseDenom
 	evmGenState.Params.ExtendedDenomOptions = &evmtypes.ExtendedDenomOptions{ExtendedDenom: config.BaseDenom}
 	evmGenState.Params.ActiveStaticPrecompiles = evmtypes.AvailableStaticPrecompiles
-	evmGenState.Preinstalls = evmtypes.DefaultPreinstalls
+
+	all, err := preinstalls.Merge(evmtypes.DefaultPreinstalls, preinstalls.MustLoad())
+	if err != nil {
+		panic(err)
+	}
+	evmGenState.Preinstalls = all
 
 	return evmGenState
 }
