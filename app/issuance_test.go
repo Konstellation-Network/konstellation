@@ -59,6 +59,25 @@ func TestAnnualIssuance(t *testing.T) {
 		}
 	})
 
+	t.Run("decided F = 1265: 8 % APR at 25 % of a 1 B supply bonded", func(t *testing.T) {
+		if !config.MintIssuanceFactor.Equal(math.LegacyNewDec(1265)) {
+			t.Fatalf("MintIssuanceFactor = %s; changing it is a D4 re-decision, update ENGINEERING.md and this test", config.MintIssuanceFactor)
+		}
+		bonded := kashInt(250_000_000)
+		got, err := AnnualIssuance(config.MintIssuanceFactor, bonded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		apr := got.QuoInt(bonded)
+		if apr.LT(math.LegacyMustNewDecFromStr("0.0799")) || apr.GT(math.LegacyMustNewDecFromStr("0.0801")) {
+			t.Fatalf("APR at 250 M bonded = %s, want 0.08", apr)
+		}
+		// 20 M KASH/yr = 2 % of the 1 B genesis supply
+		if yr := got.QuoInt(one); yr.LT(math.LegacyNewDec(19_990_000)) || yr.GT(math.LegacyNewDec(20_010_000)) {
+			t.Fatalf("annual = %s KASH, want ≈20 M", yr)
+		}
+	})
+
 	t.Run("deterministic", func(t *testing.T) {
 		x, _ := AnnualIssuance(config.MintIssuanceFactor, kashInt(123_456_789))
 		y, _ := AnnualIssuance(config.MintIssuanceFactor, kashInt(123_456_789))
