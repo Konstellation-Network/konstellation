@@ -32,13 +32,18 @@ func TestValidateEVMChainID(t *testing.T) {
 	}
 }
 
+// Decided 2026-09-15 (TOKENOMICS.md §5). Changing these is a re-decision:
+// update TOKENOMICS.md in the same change.
 func TestGovDepositsAreWholeTokens(t *testing.T) {
 	one := kash(1)[0].Amount
-	if got := GovMinDeposit[0].Amount.Quo(one).Int64(); got != 10 {
-		t.Fatalf("min deposit = %d KASH, want 10", got)
+	if got := GovMinDeposit[0].Amount.Quo(one).Int64(); got != 1_000 {
+		t.Fatalf("min deposit = %d KASH, want 1000", got)
 	}
-	if got := GovExpeditedMinDeposit[0].Amount.Quo(one).Int64(); got != 50 {
-		t.Fatalf("expedited min deposit = %d KASH, want 50", got)
+	if got := GovExpeditedMinDeposit[0].Amount.Quo(one).Int64(); got != 5_000 {
+		t.Fatalf("expedited min deposit = %d KASH, want 5000", got)
+	}
+	if !GovBurnVoteVeto || GovBurnVoteQuorum || GovBurnProposalDepositPrevote {
+		t.Fatal("deposits must be refundable on every outcome except veto")
 	}
 	if GovMinDeposit[0].Denom != BaseDenom {
 		t.Fatalf("denom = %q, want %q", GovMinDeposit[0].Denom, BaseDenom)
