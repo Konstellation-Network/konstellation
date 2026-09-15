@@ -28,9 +28,10 @@ type GenesisState map[string]json.RawMessage
 // x/precisebank is not involved), enables all static precompiles, and installs
 // the upstream default preinstalls (Create2 factory, Multicall3, Permit2, Safe
 // singleton factory, EIP-2935) plus Konstellation's own: ERC-4337 EntryPoint
-// v0.7 and v0.8 and the hardhat-deploy/Defender Create2Deployer, all at their
-// canonical mainnet addresses (ENGINEERING.md §6.3), bytecode pinned in
-// `contracts` and verified against its codeHash on load.
+// v0.7 and v0.8 (each with the SenderCreator its bytecode hard-references) and
+// the hardhat-deploy/Defender Create2Deployer, all at their canonical mainnet
+// addresses (ENGINEERING.md §6.3), bytecode pinned in `contracts` and
+// verified against its codeHash on load.
 func NewEVMGenesisState() *evmtypes.GenesisState {
 	evmGenState := evmtypes.DefaultGenesisState()
 	evmGenState.Params.EvmDenom = config.BaseDenom

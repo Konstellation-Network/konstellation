@@ -30,10 +30,29 @@ import (
 // Files are the pinned preinstalls, one JSON per contract. The list is the
 // set of names, so a file dropped into the directory without being listed here
 // is not silently shipped.
+//
+// Each EntryPoint ships with its SenderCreator: the EntryPoint constructor
+// CREATEs it (nonce 1) and stores the address as an immutable, and a preinstall
+// never runs its constructor. Without it every UserOp carrying initCode and
+// every getSenderAddress() call reverts, and the address cannot be recreated
+// post-genesis. Dependencies asserts the pairing.
 var Files = []string{
 	"EntryPointV07.json",
+	"SenderCreatorV07.json",
 	"EntryPointV08.json",
+	"SenderCreatorV08.json",
 	"Create2Deployer.json",
+}
+
+// Dependencies lists, per preinstall name, the other preinstalls whose address
+// its bytecode embeds as an immutable. Load checks each dependency is in the
+// set and that its address actually appears in the dependant's code, so a
+// re-pin of one half without the other fails at init.
+var Dependencies = map[string][]string{
+	"EntryPointV07": {"SenderCreatorV07"},
+	"EntryPointV08": {"SenderCreatorV08"},
+	// v0.8's SenderCreator is restricted to its EntryPoint (onlyEntryPoint).
+	"SenderCreatorV08": {"EntryPointV08"},
 }
 
 //go:embed *.json
@@ -91,7 +110,37 @@ func Load() ([]evmtypes.Preinstall, error) {
 		}
 		out = append(out, pi)
 	}
+	if err := checkDependencies(out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// checkDependencies enforces Dependencies against a loaded list: every named
+// dependency must be present, and its address must literally occur in the
+// dependant's bytecode (that is how a Solidity immutable is stored).
+func checkDependencies(ps []evmtypes.Preinstall) error {
+	byName := make(map[string]evmtypes.Preinstall, len(ps))
+	for _, p := range ps {
+		byName[p.Name] = p
+	}
+	for name, deps := range Dependencies {
+		p, ok := byName[name]
+		if !ok {
+			return fmt.Errorf("preinstall %s is listed in Dependencies but not in Files", name)
+		}
+		code := common.FromHex(p.Code)
+		for _, depName := range deps {
+			dep, ok := byName[depName]
+			if !ok {
+				return fmt.Errorf("preinstall %s needs %s, which is not in Files", name, depName)
+			}
+			if !bytes.Contains(code, common.HexToAddress(dep.Address).Bytes()) {
+				return fmt.Errorf("preinstall %s does not reference %s at %s: mismatched pins", name, depName, dep.Address)
+			}
+		}
+	}
+	return nil
 }
 
 // MustLoad is Load for genesis construction, where a bad pin must abort.

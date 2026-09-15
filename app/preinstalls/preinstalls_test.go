@@ -13,9 +13,16 @@ import (
 // contracts/preinstalls/*.json. Duplicated here on purpose: the JSON carrying
 // its own codeHash only proves the file is self-consistent, this proves the
 // file is the one we meant to ship.
+const (
+	senderCreatorV07 = "SenderCreatorV07"
+	senderCreatorV08 = "SenderCreatorV08"
+)
+
 var want = map[string]struct{ addr, codeHash string }{
 	"EntryPointV07":   {"0x0000000071727De22E5E9d8BAf0edAc6f37da032", "0x8db5ff695839d655407cc8490bb7a5d82337a86a6b39c3f0258aa6c3b582fc58"},
+	senderCreatorV07:  {"0xEFC2c1444eBCC4Db75e7613d20C6a62fF67A167C", "0x283c9d14378f5f4c4e24045b87d621d48443fa5b4af7dd7180a599b3756a7689"},
 	"EntryPointV08":   {"0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108", "0x44e632a24c6f2600cbd5b5b8b4c2d372359112c8b5774297f5fd0a9e64f11f86"},
+	senderCreatorV08:  {"0x449ED7C3e6Fee6a97311d4b55475DF59C44AdD33", "0xc69a1b3a000d570bc86eb096ee63a9014a17951ad616d720882ec61432b00fcf"},
 	"Create2Deployer": {"0x13b0D85CcB8bf860b6b79AF3029fCA081AE9beF2", "0x2a300e3fee0eee59e0a1b184d1531c4bea54b843b28426f227d12145e8918663"},
 }
 
@@ -57,6 +64,37 @@ func TestMergeWithDefaults(t *testing.T) {
 	gs.Preinstalls = all
 	if err := gs.Validate(); err != nil {
 		t.Fatalf("x/vm genesis with merged preinstalls does not validate: %v", err)
+	}
+}
+
+// Dropping a SenderCreator must fail loudly, not ship a half-working
+// EntryPoint (see PR #4 review).
+func TestDependenciesRejectMissingSenderCreator(t *testing.T) {
+	ps := MustLoad()
+	for _, victim := range []string{senderCreatorV07, senderCreatorV08} {
+		var without []evmtypes.Preinstall
+		for _, p := range ps {
+			if p.Name != victim {
+				without = append(without, p)
+			}
+		}
+		if err := checkDependencies(without); err == nil {
+			t.Errorf("dropping %s should fail dependency check", victim)
+		}
+	}
+}
+
+// A SenderCreator pinned from the wrong deployment (address not embedded in
+// the EntryPoint's immutables) must also fail.
+func TestDependenciesRejectWrongAddress(t *testing.T) {
+	ps := MustLoad()
+	for i := range ps {
+		if ps[i].Name == senderCreatorV07 {
+			ps[i].Address = "0x1111111111111111111111111111111111111111"
+		}
+	}
+	if err := checkDependencies(ps); err == nil {
+		t.Fatal("re-addressed SenderCreatorV07 should fail dependency check")
 	}
 }
 
