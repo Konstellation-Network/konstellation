@@ -53,7 +53,14 @@ func BlockedAddresses() map[string]bool {
 
 // module account permissions
 var maccPerms = map[string][]string{
-	authtypes.FeeCollectorName:     nil,
+	// Burner: the D5 base-fee burn destroys baseFee × gasUsed straight out of
+	// the collector at EndBlock (app/feeburn.go). Nothing else burns from it.
+	// Permissions are stored on the module account at creation, so this
+	// only takes effect on a fresh chain: a network that ever ran without it
+	// (or a genesis exported from one) needs an upgrade handler that rewrites
+	// the fee collector account with Burner, or BurnCoins panics at the first
+	// EndBlock with gas used.
+	authtypes.FeeCollectorName:     {authtypes.Burner},
 	distrtypes.ModuleName:          nil,
 	transfertypes.ModuleName:       {authtypes.Minter, authtypes.Burner},
 	minttypes.ModuleName:           {authtypes.Minter},

@@ -107,6 +107,31 @@ var (
 // deviate from the upstream default.
 var FeeMarketMinGasMultiplier = math.LegacyNewDecWithPrec(50, 2)
 
+// MintIssuanceFactor (ENGINEERING.md D4; value decided 2026-09-15) is F in
+//
+//	annual issuance (KASH) = F × √(bonded KASH)
+//
+// so staking yield = F ÷ √(bonded KASH). Like Ethereum's BASE_REWARD_FACTOR
+// it is a protocol constant, changed only by a coordinated upgrade, not a gov
+// param. See app/issuance.go.
+//
+// F = 1265 was chosen against a 1,000,000,000 KASH genesis supply. On that
+// supply the curve gives, by bonded share:
+//
+//	bonded   10 %  (100 M): 12.65 % APR, 12.65 M KASH/yr (1.27 % of supply)
+//	bonded   25 %  (250 M):  8.00 % APR, 20.0  M KASH/yr (2.0  % of supply)
+//	bonded   50 %  (500 M):  5.66 % APR, 28.3  M KASH/yr (2.8  % of supply)
+//	bonded  100 %  (  1 B):  4.00 % APR, 40.0  M KASH/yr (4.0  % of supply)
+//
+// before the D5 base-fee burn, which nets against it.
+var MintIssuanceFactor = math.LegacyNewDec(1265)
+
+// MintBlocksPerYear feeds x/mint's per-block provision
+// (AnnualProvisions ÷ BlocksPerYear). It is a gov param and must track real
+// block time; set here for a ~1.5 s CometBFT block (60·60·8766 ÷ 1.5).
+// TODO(D4): re-derive from observed testnet-1 block time before mainnet.
+const MintBlocksPerYear uint64 = 60 * 60 * 8766 * 2 / 3
+
 // kash converts a whole-KASH amount to base units (esp).
 func kash(n int64) sdk.Coins {
 	one := math.NewIntWithDecimal(1, int(Decimals))

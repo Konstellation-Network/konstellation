@@ -7,6 +7,8 @@ import (
 	feemarkettypes "github.com/cosmos/evm/x/feemarket/types"
 	evmtypes "github.com/cosmos/evm/x/vm/types"
 
+	"cosmossdk.io/math"
+
 	minttypes "github.com/cosmos/cosmos-sdk/x/mint/types"
 
 	"github.com/Konstellation-Network/konstellation/app/config"
@@ -60,11 +62,22 @@ func NewErc20GenesisState() *erc20types.GenesisState {
 
 // NewMintGenesisState returns the default genesis state for the mint module.
 //
-// Emission model is an open decision (ENGINEERING.md D4); SDK default curve
-// until it is made, denominated in the base denom.
+// Emission is D4's √bonded curve, implemented as the keeper's MintFn
+// (app/issuance.go), so the SDK's bonded-ratio-targeting params are inert:
+// InflationRateChange / InflationMin / InflationMax are zeroed and GoalBonded
+// is 1 (the validator requires it non-zero) so nobody reads a 7–20 % band or a
+// 67 % target out of genesis and thinks it is enforced. What does matter:
+// MintDenom, BlocksPerYear (per-block provision), MaxSupply (0 = uncapped).
+// The Minter's initial Inflation is 0; the MintFn overwrites it on block 1.
 func NewMintGenesisState() *minttypes.GenesisState {
 	mintGenState := minttypes.DefaultGenesisState()
 	mintGenState.Params.MintDenom = config.BaseDenom
+	mintGenState.Params.InflationRateChange = math.LegacyZeroDec()
+	mintGenState.Params.InflationMin = math.LegacyZeroDec()
+	mintGenState.Params.InflationMax = math.LegacyZeroDec()
+	mintGenState.Params.GoalBonded = math.LegacyOneDec()
+	mintGenState.Params.BlocksPerYear = config.MintBlocksPerYear
+	mintGenState.Minter = minttypes.InitialMinter(math.LegacyZeroDec())
 
 	return mintGenState
 }
@@ -72,7 +85,7 @@ func NewMintGenesisState() *minttypes.GenesisState {
 // NewFeeMarketGenesisState returns the default genesis state for the feemarket module.
 //
 // EIP-1559 base fee stays ENABLED (upstream evmd disables it for its example
-// chain). Base fee disposition — distribute vs burn — is open decision D5.
+// chain). The base fee is burned (D5, decided 2026-09-15; app/feeburn.go).
 // MinGasMultiplier (decided 2026-09-14): kept at the cosmos/evm default,
 // see config.FeeMarketMinGasMultiplier.
 func NewFeeMarketGenesisState() *feemarkettypes.GenesisState {
