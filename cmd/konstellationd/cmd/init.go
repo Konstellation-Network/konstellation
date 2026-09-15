@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cosmos/cosmos-sdk/client"
+	"github.com/cosmos/cosmos-sdk/client/flags"
 	"github.com/cosmos/cosmos-sdk/codec"
 	"github.com/cosmos/cosmos-sdk/server"
 	"github.com/cosmos/cosmos-sdk/types/module"
@@ -28,15 +29,17 @@ import (
 //
 // --default-denom is rejected unless it names the base denom: the denom is a
 // genesis-time decision (ENGINEERING.md D2), not a per-node flag.
-func initCmd(mm module.BasicManager, defaultNodeHome string, defaultGenesis func() map[string]json.RawMessage) *cobra.Command {
-	gen := defaultGenesis()
+//
+// The genesis depends on the chain-id (ENGINEERING.md §18: testnet-1 and dev
+// nets get short governance timings, konstellation-1 gets D11's), and the
+// SDK only resolves the chain-id inside its RunE. So the override is lazy:
+// PreRunE resolves the chain-id the same way the SDK will, builds the genesis
+// once, and each module's DefaultGenesis hands out its slice of it.
+func initCmd(mm module.BasicManager, defaultNodeHome string, defaultGenesis func(chainID string) map[string]json.RawMessage) *cobra.Command {
+	lazy := &lazyGenesis{build: defaultGenesis}
 	overridden := make(module.BasicManager, len(mm))
 	for name, b := range mm {
-		if raw, ok := gen[name]; ok {
-			overridden[name] = genesisOverride{AppModuleBasic: b, raw: raw}
-		} else {
-			overridden[name] = b
-		}
+		overridden[name] = genesisOverride{AppModuleBasic: b, name: name, gen: lazy}
 	}
 
 	cmd := genutilcli.InitCmd(overridden, defaultNodeHome)
@@ -45,6 +48,15 @@ func initCmd(mm module.BasicManager, defaultNodeHome string, defaultGenesis func
 		if denom != "" && denom != config.BaseDenom {
 			return fmt.Errorf("--%s must be %q: the base denom is fixed at genesis", genutilcli.FlagDefaultBondDenom, config.BaseDenom)
 		}
+		// Same precedence as the SDK's InitCmd: --chain-id, then client.toml.
+		// Empty means the SDK will pick a random test-chain-* id, which
+		// ProfileFor maps to the testnet/dev profile like any unknown id.
+		chainID, _ := cmd.Flags().GetString(flags.FlagChainID)
+		if chainID == "" {
+			chainID = client.GetClientContextFromCmd(cmd).ChainID
+		}
+		lazy.chainID = chainID
+		cmd.PrintErrf("genesis profile: %s (chain-id %q)\n", config.ProfileFor(chainID).Name, chainID)
 		// The root pre-run has already written config.toml/client.toml/app.toml
 		// (from our template if absent). If app.toml pre-existed (infra
 		// tooling, plain-SDK template) it must carry a numeric evm-chain-id
@@ -150,15 +162,41 @@ func setEVMChainID(appToml string, id uint64) error {
 	return nil
 }
 
-// genesisOverride is an AppModuleBasic whose DefaultGenesis is a fixed blob.
+// lazyGenesis builds app.DefaultGenesis once, for the chain-id PreRunE
+// resolved, the first time any module asks for its default.
+type lazyGenesis struct {
+	build   func(chainID string) map[string]json.RawMessage
+	chainID string
+	gen     map[string]json.RawMessage
+}
+
+func (l *lazyGenesis) get() map[string]json.RawMessage {
+	if l.gen == nil {
+		l.gen = l.build(l.chainID)
+	}
+	return l.gen
+}
+
+// genesisOverride is an AppModuleBasic whose DefaultGenesis is the module's
+// slice of the app-level genesis; modules the app does not customise fall
+// through to their own default.
 type genesisOverride struct {
 	module.AppModuleBasic
-	raw json.RawMessage
+	name string
+	gen  *lazyGenesis
 }
 
 var _ module.HasGenesisBasics = genesisOverride{}
 
-func (g genesisOverride) DefaultGenesis(codec.JSONCodec) json.RawMessage { return g.raw }
+func (g genesisOverride) DefaultGenesis(cdc codec.JSONCodec) json.RawMessage {
+	if raw, ok := g.gen.get()[g.name]; ok {
+		return raw
+	}
+	if v, ok := g.AppModuleBasic.(module.HasGenesisBasics); ok {
+		return v.DefaultGenesis(cdc)
+	}
+	return nil
+}
 
 func (g genesisOverride) ValidateGenesis(cdc codec.JSONCodec, txCfg client.TxEncodingConfig, data json.RawMessage) error {
 	if v, ok := g.AppModuleBasic.(module.HasGenesisBasics); ok {
