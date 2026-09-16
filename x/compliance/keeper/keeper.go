@@ -26,6 +26,7 @@ import (
 //	PendingSeq  next pending id
 //	ExecIndex   (execute_at unix, id) so EndBlock finds due updates without a scan
 //	ExpiryIndex (expires_at unix, address) so EndBlock finds lapsed emergency freezes
+//	Cooldown    address → unix time before which it may not be emergency-frozen again
 type Keeper struct {
 	cdc          codec.BinaryCodec
 	govAuthority string
@@ -38,6 +39,7 @@ type Keeper struct {
 	PendingSeq  collections.Sequence
 	ExecIndex   collections.KeySet[collections.Pair[int64, uint64]]
 	ExpiryIndex collections.KeySet[collections.Pair[int64, []byte]]
+	Cooldown    collections.Map[[]byte, int64]
 }
 
 // NewKeeper builds the keeper. govAuthority is x/gov's module address: the
@@ -58,6 +60,7 @@ func NewKeeper(cdc codec.BinaryCodec, storeService store.KVStoreService, govAuth
 		PendingSeq:   collections.NewSequence(sb, types.PendingSeqKey, "pending_seq"),
 		ExecIndex:    collections.NewKeySet(sb, types.ExecutionIdxKey, "exec_index", collections.PairKeyCodec(collections.Int64Key, collections.Uint64Key)),
 		ExpiryIndex:  collections.NewKeySet(sb, types.ExpiryIndexKey, "expiry_index", collections.PairKeyCodec(collections.Int64Key, collections.BytesKey)),
+		Cooldown:     collections.NewMap(sb, types.CooldownKey, "cooldown", collections.BytesKey, collections.Int64Value),
 	}
 	schema, err := sb.Build()
 	if err != nil {

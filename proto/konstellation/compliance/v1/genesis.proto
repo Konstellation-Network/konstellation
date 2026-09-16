@@ -13,4 +13,5 @@ message GenesisState {
   repeated PendingUpdate pending = 3 [(gogoproto.nullable) = false];
   // next_pending_id is the id the next scheduled update gets.
   uint64 next_pending_id = 4;
+  repeated Cooldown cooldowns = 5 [(gogoproto.nullable) = false];
 }

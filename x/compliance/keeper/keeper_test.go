@@ -340,3 +340,114 @@ func TestMsgValidation(t *testing.T) {
 		t.Fatal("overlong timelock accepted")
 	}
 }
+
+// PR #10 review #2: scheduling the permanent add extends the emergency
+// freeze to execute_at, so ratification leaves no unfrozen gap; and an
+// emergency freeze cannot be chained.
+func TestRatificationHasNoGap(t *testing.T) {
+	f := setup(t)
+	_, err := f.ms.EmergencyFreeze(f.ctx, &types.MsgEmergencyFreeze{Authority: authority, Addresses: []string{alice.Hex()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ratify 10h later: scheduled execute_at = T+10h+24h, after the T+24h expiry
+	f.advance(10 * time.Hour)
+	resp, err := f.ms.ScheduleUpdate(f.ctx, &types.MsgScheduleUpdate{
+		Authority: authority, Changes: []types.Change{change(alice, types.LIST_BLOCK, types.ACTION_ADD)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, until := f.k.FrozenUntil(f.ctx, alice.Bytes())
+	if until == nil || !until.Equal(resp.ExecuteAt) {
+		t.Fatalf("emergency expiry should be extended to execute_at %s, got %v", resp.ExecuteAt, until)
+	}
+	// every hour up to execution: still frozen
+	for i := 0; i < 24; i++ {
+		f.advance(time.Hour)
+		if !f.k.IsFrozen(f.ctx, alice.Bytes()) {
+			t.Fatalf("gap: unfrozen at +%dh after scheduling", i+1)
+		}
+	}
+	if frozen, until := f.k.FrozenUntilUnix(f.ctx, alice.Bytes()); !frozen || until != 0 {
+		t.Fatalf("should now be permanent: %v %d", frozen, until)
+	}
+}
+
+func TestEmergencyFreezeCannotBeChained(t *testing.T) {
+	f := setup(t)
+	if _, err := f.ms.EmergencyFreeze(f.ctx, &types.MsgEmergencyFreeze{Authority: authority, Addresses: []string{alice.Hex()}}); err != nil {
+		t.Fatal(err)
+	}
+	// re-freeze while live: refused
+	if _, err := f.ms.EmergencyFreeze(f.ctx, &types.MsgEmergencyFreeze{Authority: authority, Addresses: []string{alice.Hex()}}); !types.ErrEmergencyCooldown.Is(err) {
+		t.Fatalf("re-freeze while live: want ErrEmergencyCooldown, got %v", err)
+	}
+	// lapse, then immediately re-freeze: refused for one timelock
+	f.advance(24 * time.Hour)
+	if f.k.IsFrozen(f.ctx, alice.Bytes()) {
+		t.Fatal("should have lapsed")
+	}
+	if _, err := f.ms.EmergencyFreeze(f.ctx, &types.MsgEmergencyFreeze{Authority: authority, Addresses: []string{alice.Hex()}}); !types.ErrEmergencyCooldown.Is(err) {
+		t.Fatalf("re-freeze in cooldown: want ErrEmergencyCooldown, got %v", err)
+	}
+	// governance is not subject to the cooldown
+	if _, err := f.ms.GovUpdate(f.ctx, &types.MsgGovUpdate{Authority: gov, Changes: []types.Change{change(alice, types.LIST_BLOCK, types.ACTION_ADD)}}); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.ms.GovUpdate(f.ctx, &types.MsgGovUpdate{Authority: gov, Changes: []types.Change{change(alice, types.LIST_BLOCK, types.ACTION_REMOVE)}})
+	// after the cooldown a fresh emergency freeze is allowed again
+	f.advance(24 * time.Hour)
+	if _, err := f.ms.EmergencyFreeze(f.ctx, &types.MsgEmergencyFreeze{Authority: authority, Addresses: []string{alice.Hex()}}); err != nil {
+		t.Fatalf("after cooldown: %v", err)
+	}
+	// lifting early also starts the cooldown
+	if _, err := f.ms.LiftEmergencyFreeze(f.ctx, &types.MsgLiftEmergencyFreeze{Authority: authority, Addresses: []string{alice.Hex()}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.ms.EmergencyFreeze(f.ctx, &types.MsgEmergencyFreeze{Authority: authority, Addresses: []string{alice.Hex()}}); !types.ErrEmergencyCooldown.Is(err) {
+		t.Fatalf("lift-and-refreeze: want ErrEmergencyCooldown, got %v", err)
+	}
+	// cooldown survives a genesis round-trip
+	gs, _ := f.k.ExportGenesis(f.ctx)
+	if len(gs.Cooldowns) != 1 {
+		t.Fatalf("cooldowns exported: %d", len(gs.Cooldowns))
+	}
+	g := setup(t)
+	if err := g.k.InitGenesis(g.ctx, *gs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.ms.EmergencyFreeze(g.ctx, &types.MsgEmergencyFreeze{Authority: authority, Addresses: []string{alice.Hex()}}); !types.ErrEmergencyCooldown.Is(err) {
+		t.Fatalf("cooldown lost across genesis: %v", err)
+	}
+}
+
+// PR #10 review #3/#4: timelock must be positive; timestamps are whole seconds.
+func TestTimelockBoundsAndSecondGranularity(t *testing.T) {
+	p := types.DefaultParams()
+	p.Timelock = 0
+	if err := p.Validate(); err == nil {
+		t.Fatal("zero timelock accepted")
+	}
+	f := setup(t)
+	f.ctx = f.ctx.WithBlockTime(t0.Add(700 * time.Millisecond))
+	resp, _ := f.ms.EmergencyFreeze(f.ctx, &types.MsgEmergencyFreeze{Authority: authority, Addresses: []string{alice.Hex()}})
+	if resp.ExpiresAt.Nanosecond() != 0 {
+		t.Fatalf("expiry not whole seconds: %s", resp.ExpiresAt)
+	}
+	sresp, _ := f.ms.ScheduleUpdate(f.ctx, &types.MsgScheduleUpdate{Authority: authority, Changes: []types.Change{change(bob, types.LIST_ALLOW, types.ACTION_ADD)}})
+	if sresp.ExecuteAt.Nanosecond() != 0 {
+		t.Fatalf("execute_at not whole seconds: %s", sresp.ExecuteAt)
+	}
+	// one second before the index key: not executed; at it: executed
+	f.ctx = f.ctx.WithBlockTime(sresp.ExecuteAt.Add(-time.Second))
+	_ = f.k.EndBlock(f.ctx)
+	if f.k.IsVerified(f.ctx, bob.Bytes()) {
+		t.Fatal("executed early")
+	}
+	f.ctx = f.ctx.WithBlockTime(sresp.ExecuteAt)
+	_ = f.k.EndBlock(f.ctx)
+	if !f.k.IsVerified(f.ctx, bob.Bytes()) {
+		t.Fatal("not executed at execute_at")
+	}
+}

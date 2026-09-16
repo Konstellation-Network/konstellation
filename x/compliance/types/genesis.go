@@ -59,5 +59,20 @@ func (gs GenesisState) Validate() error {
 	if gs.NextPendingId == 0 {
 		return fmt.Errorf("next_pending_id must be ≥ 1")
 	}
+	cd := make(map[string]struct{}, len(gs.Cooldowns))
+	for i, c := range gs.Cooldowns {
+		addr, err := ParseAddress(c.Address)
+		if err != nil {
+			return fmt.Errorf("cooldown %d: %w", i, err)
+		}
+		if c.Until <= 0 {
+			return fmt.Errorf("cooldown %d: until must be positive", i)
+		}
+		k := fmt.Sprintf("%x", addr)
+		if _, dup := cd[k]; dup {
+			return fmt.Errorf("cooldown %d: duplicate %s", i, c.Address)
+		}
+		cd[k] = struct{}{}
+	}
 	return nil
 }

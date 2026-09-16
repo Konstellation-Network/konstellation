@@ -92,20 +92,30 @@ func (k Keeper) dropExpiry(ctx context.Context, m collections.Map[[]byte, types.
 	return k.ExpiryIndex.Remove(ctx, collections.Join(e.ExpiresAt.Unix(), addr))
 }
 
-// emergencyFreeze writes a temporary block entry expiring at expiresAt. A
-// permanent entry is left alone; an existing emergency entry is replaced
-// (its expiry moves to the new one).
+// emergencyFreeze writes a temporary block entry expiring at expiresAt.
+//
+// "Auto-expires unless ratified" (D6) has teeth only if the emergency path
+// cannot be chained: an address under a live emergency freeze, or inside the
+// cooldown that follows one, is refused — the authority must ratify through
+// a scheduled (timelocked, cancellable, public) update or governance. A
+// permanent entry is left alone: it is already stronger.
 func (k Keeper) emergencyFreeze(ctx context.Context, addr []byte, reason, by string, expiresAt time.Time) error {
 	sdkCtx := sdk.UnwrapSDKContext(ctx)
 	if e, err := k.Block.Get(ctx, addr); err == nil {
 		if e.ExpiresAt == nil {
 			return nil // already permanently frozen
 		}
-		if err := k.ExpiryIndex.Remove(ctx, collections.Join(e.ExpiresAt.Unix(), addr)); err != nil {
+		return types.ErrEmergencyCooldown.Wrapf("%s is emergency-frozen until %s", types.Bech32(addr), e.ExpiresAt.UTC().Format(time.RFC3339))
+	}
+	if until, err := k.Cooldown.Get(ctx, addr); err == nil {
+		if sdkCtx.BlockTime().Unix() < until {
+			return types.ErrEmergencyCooldown.Wrapf("%s in cooldown until %s", types.Bech32(addr), time.Unix(until, 0).UTC().Format(time.RFC3339))
+		}
+		if err := k.Cooldown.Remove(ctx, addr); err != nil {
 			return err
 		}
 	}
-	exp := expiresAt
+	exp := expiresAt.Truncate(time.Second) // index keys are whole seconds
 	if err := k.Block.Set(ctx, addr, types.ListEntry{
 		Address:   types.Bech32(addr),
 		List:      types.LIST_BLOCK,
@@ -128,7 +138,8 @@ func (k Keeper) emergencyFreeze(ctx context.Context, addr []byte, reason, by str
 }
 
 // liftEmergencyFreeze removes a temporary block entry. Permanent entries
-// need a scheduled or governance removal.
+// need a scheduled or governance removal. Lifting starts the same cooldown
+// as lapsing, so lift-and-refreeze is not a way around it.
 func (k Keeper) liftEmergencyFreeze(ctx context.Context, addr []byte, by string) error {
 	e, err := k.Block.Get(ctx, addr)
 	if err != nil || e.ExpiresAt == nil {
@@ -140,9 +151,47 @@ func (k Keeper) liftEmergencyFreeze(ctx context.Context, addr []byte, by string)
 	if err := k.Block.Remove(ctx, addr); err != nil {
 		return err
 	}
+	if err := k.startCooldown(ctx, addr); err != nil {
+		return err
+	}
 	sdk.UnwrapSDKContext(ctx).EventManager().EmitEvent(sdk.NewEvent(types.EventTypeEmergencyLifted,
 		sdk.NewAttribute(types.AttributeKeyAddress, types.Bech32(addr)),
 		sdk.NewAttribute(types.AttributeKeyBy, by),
+	))
+	return nil
+}
+
+// startCooldown blocks a fresh emergency freeze on addr for one timelock
+// from now. Governance and scheduled updates are unaffected.
+func (k Keeper) startCooldown(ctx context.Context, addr []byte) error {
+	until := sdk.UnwrapSDKContext(ctx).BlockTime().Add(k.GetParams(ctx).Timelock).Truncate(time.Second).Unix()
+	return k.Cooldown.Set(ctx, addr, until)
+}
+
+// extendEmergencyTo pushes a live emergency freeze on addr out to at least
+// `until`. Called when a permanent block-list add is scheduled for the
+// address, so ratification never leaves an unfrozen gap between the
+// emergency expiry and the scheduled execute_at.
+func (k Keeper) extendEmergencyTo(ctx context.Context, addr []byte, until time.Time) error {
+	e, err := k.Block.Get(ctx, addr)
+	if err != nil || e.ExpiresAt == nil || !e.ExpiresAt.Before(until) {
+		return nil
+	}
+	if err := k.ExpiryIndex.Remove(ctx, collections.Join(e.ExpiresAt.Unix(), addr)); err != nil {
+		return err
+	}
+	exp := until.Truncate(time.Second)
+	e.ExpiresAt = &exp
+	if err := k.Block.Set(ctx, addr, e); err != nil {
+		return err
+	}
+	if err := k.ExpiryIndex.Set(ctx, collections.Join(exp.Unix(), addr)); err != nil {
+		return err
+	}
+	sdk.UnwrapSDKContext(ctx).EventManager().EmitEvent(sdk.NewEvent(types.EventTypeEmergencyFreeze,
+		sdk.NewAttribute(types.AttributeKeyAddress, types.Bech32(addr)),
+		sdk.NewAttribute(types.AttributeKeyExpiresAt, exp.UTC().Format(time.RFC3339)),
+		sdk.NewAttribute(types.AttributeKeyReason, "extended to scheduled ratification"),
 	))
 	return nil
 }
@@ -164,7 +213,7 @@ func (k Keeper) schedule(ctx context.Context, changes []types.Change, by string)
 	p := types.PendingUpdate{
 		Id:          id,
 		Changes:     changes,
-		ExecuteAt:   sdkCtx.BlockTime().Add(delay),
+		ExecuteAt:   sdkCtx.BlockTime().Add(delay).Truncate(time.Second), // index keys are whole seconds
 		ScheduledBy: by,
 	}
 	if err := k.Pending.Set(ctx, id, p); err != nil {
@@ -172,6 +221,16 @@ func (k Keeper) schedule(ctx context.Context, changes []types.Change, by string)
 	}
 	if err := k.ExecIndex.Set(ctx, collections.Join(p.ExecuteAt.Unix(), id)); err != nil {
 		return types.PendingUpdate{}, err
+	}
+	// A scheduled permanent freeze ratifies a live emergency freeze: keep
+	// the address frozen through to execute_at.
+	for _, c := range changes {
+		if c.List == types.LIST_BLOCK && c.Action == types.ACTION_ADD {
+			addr, _ := types.ParseAddress(c.Address)
+			if err := k.extendEmergencyTo(ctx, addr, p.ExecuteAt); err != nil {
+				return types.PendingUpdate{}, err
+			}
+		}
 	}
 	sdkCtx.EventManager().EmitEvent(sdk.NewEvent(types.EventTypeUpdateScheduled,
 		sdk.NewAttribute(types.AttributeKeyID, fmt.Sprint(id)),

@@ -198,3 +198,35 @@ func TestWrapOrder(t *testing.T) {
 		t.Fatalf("inner=%v err=%v", innerCalled, err)
 	}
 }
+
+// PR #10 review #1: the pre-check runs on an unvalidated tx, so malformed
+// input must produce an error, never a panic.
+func TestInvolvedAddresses_MalformedDoesNotPanic(t *testing.T) {
+	cdc := testCodec(t)
+
+	// EVM message with no raw transaction: AsTransaction() is nil.
+	empty := &evmtypes.MsgEthereumTx{From: alice.Bytes()}
+	got, err := ante.InvolvedAddresses(cdc, fakeTx{msgs: []sdk.Msg{empty}})
+	if err != nil {
+		// acceptable: rejected. Not acceptable: a panic (would have failed the test binary).
+		return
+	}
+	if !has(got, alice) {
+		t.Fatal("sender missing from empty EVM msg")
+	}
+
+	// A FeeTx whose accessors panic (what the SDK wrapper does on bad AuthInfo).
+	got, err = ante.InvolvedAddresses(cdc, panickyTx{})
+	if err == nil {
+		t.Fatalf("panicking accessors must surface as an error, got %x", got)
+	}
+}
+
+type panickyTx struct{}
+
+func (panickyTx) GetMsgs() []sdk.Msg                    { return nil }
+func (panickyTx) GetMsgsV2() ([]protov2.Message, error) { return nil, nil }
+func (panickyTx) GetGas() uint64                        { return 0 }
+func (panickyTx) GetFee() sdk.Coins                     { return nil }
+func (panickyTx) FeePayer() []byte                      { panic("no fee") }
+func (panickyTx) FeeGranter() []byte                    { panic("bad granter") }

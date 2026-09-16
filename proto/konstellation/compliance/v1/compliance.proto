@@ -85,3 +85,11 @@ message PendingUpdate {
   // scheduled_by is the authority that scheduled it.
   string scheduled_by = 4 [(cosmos_proto.scalar) = "cosmos.AddressString"];
 }
+
+// Cooldown records that an address may not be emergency-frozen again before
+// `until`: one timelock after its last emergency freeze lapsed or was lifted.
+message Cooldown {
+  string address = 1 [(cosmos_proto.scalar) = "cosmos.AddressString"];
+  // until is a unix time in seconds.
+  int64 until = 2;
+}

@@ -36,8 +36,10 @@ func (p Params) Validate() error {
 			return fmt.Errorf("authority: %w", err)
 		}
 	}
-	if p.Timelock < 0 || p.Timelock > MaxTimelock {
-		return fmt.Errorf("timelock %s out of range [0, %s]", p.Timelock, MaxTimelock)
+	// Strictly positive: with 0 an emergency freeze would expire in the block
+	// it was created and never bind.
+	if p.Timelock <= 0 || p.Timelock > MaxTimelock {
+		return fmt.Errorf("timelock %s out of range (0, %s]", p.Timelock, MaxTimelock)
 	}
 	if p.AllowlistAddTimelock < 0 || p.AllowlistAddTimelock > MaxTimelock {
 		return fmt.Errorf("allowlist_add_timelock %s out of range [0, %s]", p.AllowlistAddTimelock, MaxTimelock)

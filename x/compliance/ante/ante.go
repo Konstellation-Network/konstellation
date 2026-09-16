@@ -91,8 +91,22 @@ func Check(ctx sdk.Context, cdc codec.Codec, k FreezeChecker, tx sdk.Tx) error {
 // InvolvedAddresses returns every 20-byte address the tx involves, as
 // defined in the package doc. Duplicates are not removed; callers only test
 // membership.
-func InvolvedAddresses(cdc codec.Codec, tx sdk.Tx) ([][]byte, error) {
-	var out [][]byte
+//
+// Safe on an unvalidated tx: the SDK tx wrapper's FeePayer/FeeGranter panic
+// on malformed AuthInfo, so the tx's own ValidateBasic runs first and any
+// residual panic is turned into an error rather than taking down the
+// CheckTx/InsertTx/RPC path that called us.
+func InvolvedAddresses(cdc codec.Codec, tx sdk.Tx) (out [][]byte, err error) {
+	if v, ok := tx.(interface{ ValidateBasic() error }); ok {
+		if err := v.ValidateBasic(); err != nil {
+			return nil, err
+		}
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			out, err = nil, fmt.Errorf("extracting addresses: %v", r)
+		}
+	}()
 	if ft, ok := tx.(sdk.FeeTx); ok {
 		if p := ft.FeePayer(); len(p) > 0 {
 			out = append(out, p)
@@ -117,10 +131,14 @@ func msgAddresses(cdc codec.Codec, msg sdk.Msg, depth int) ([][]byte, error) {
 	switch m := msg.(type) {
 	case *evmtypes.MsgEthereumTx:
 		// Sender is From, which the EVM ante has verified against the
-		// signature by the time Check runs.
+		// signature by the time Check runs. AsTransaction is nil for a
+		// message with no raw tx; ValidateBasic rejects those, but the
+		// mempool pre-check runs before ValidateBasic.
 		out = append(out, m.GetSender().Bytes())
-		if to := m.AsTransaction().To(); to != nil {
-			out = append(out, to.Bytes())
+		if ethTx := m.AsTransaction(); ethTx != nil {
+			if to := ethTx.To(); to != nil {
+				out = append(out, to.Bytes())
+			}
 		}
 		return out, nil
 

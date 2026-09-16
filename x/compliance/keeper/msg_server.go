@@ -2,6 +2,7 @@ package keeper
 
 import (
 	"context"
+	"time"
 
 	errorsmod "cosmossdk.io/errors"
 
@@ -55,7 +56,7 @@ func (m msgServer) EmergencyFreeze(ctx context.Context, msg *types.MsgEmergencyF
 	if err := m.k.requireAuthorityOrGov(ctx, msg.Authority); err != nil {
 		return nil, err
 	}
-	expiresAt := sdk.UnwrapSDKContext(ctx).BlockTime().Add(m.k.GetParams(ctx).Timelock)
+	expiresAt := sdk.UnwrapSDKContext(ctx).BlockTime().Add(m.k.GetParams(ctx).Timelock).Truncate(time.Second)
 	for _, a := range msg.Addresses {
 		addr, err := types.ParseAddress(a)
 		if err != nil {

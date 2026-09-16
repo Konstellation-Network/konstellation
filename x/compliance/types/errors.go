@@ -11,4 +11,5 @@ var (
 	ErrNotEmergencyFrozen = errorsmod.Register(ModuleName, 7, "address is not under an emergency freeze")
 	ErrTooMany            = errorsmod.Register(ModuleName, 8, "too many items in one message")
 	ErrReasonTooLong      = errorsmod.Register(ModuleName, 9, "reason too long")
+	ErrEmergencyCooldown  = errorsmod.Register(ModuleName, 10, "address is under an emergency freeze or its cooldown; ratify through a scheduled update or governance")
 )

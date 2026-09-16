@@ -42,6 +42,12 @@ func (k Keeper) InitGenesis(ctx context.Context, gs types.GenesisState) error {
 			return err
 		}
 	}
+	for _, c := range gs.Cooldowns {
+		addr, _ := types.ParseAddress(c.Address)
+		if err := k.Cooldown.Set(ctx, addr, c.Until); err != nil {
+			return err
+		}
+	}
 	// Sequence.Next returns the current value then increments; seed it so the
 	// next id is exactly next_pending_id.
 	return k.PendingSeq.Set(ctx, gs.NextPendingId)
@@ -60,6 +66,12 @@ func (k Keeper) ExportGenesis(ctx context.Context) (*types.GenesisState, error) 
 	}
 	if err := k.Pending.Walk(ctx, nil, func(_ uint64, p types.PendingUpdate) (bool, error) {
 		gs.Pending = append(gs.Pending, p)
+		return false, nil
+	}); err != nil {
+		return nil, err
+	}
+	if err := k.Cooldown.Walk(ctx, nil, func(addr []byte, until int64) (bool, error) {
+		gs.Cooldowns = append(gs.Cooldowns, types.Cooldown{Address: types.Bech32(addr), Until: until})
 		return false, nil
 	}); err != nil {
 		return nil, err

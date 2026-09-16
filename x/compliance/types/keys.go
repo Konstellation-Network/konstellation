@@ -18,4 +18,5 @@ var (
 	PendingSeqKey   = collections.NewPrefix(4)
 	ExpiryIndexKey  = collections.NewPrefix(5)
 	ExecutionIdxKey = collections.NewPrefix(6)
+	CooldownKey     = collections.NewPrefix(7)
 )

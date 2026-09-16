@@ -64,6 +64,9 @@ func (k Keeper) EndBlock(ctx context.Context) error {
 		if err := k.Block.Remove(ctx, g.addr); err != nil {
 			return err
 		}
+		if err := k.startCooldown(ctx, g.addr); err != nil {
+			return err
+		}
 		sdkCtx.EventManager().EmitEvent(sdk.NewEvent(types.EventTypeEntryExpired,
 			sdk.NewAttribute(types.AttributeKeyAddress, types.Bech32(g.addr)),
 			sdk.NewAttribute(types.AttributeKeyExpiresAt, time.Unix(g.at, 0).UTC().Format(time.RFC3339)),

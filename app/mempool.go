@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"time"
 
 	abci "github.com/cometbft/cometbft/abci/types"
 
@@ -103,12 +104,32 @@ func (app *KonstellationApp) configureEVMMempool(appOpts servertypes.AppOptions,
 // with the wrong error; it cannot let a frozen signer through, because the
 // ante handler re-checks the verified sender.
 func (app *KonstellationApp) compliancePreCheck(tx sdk.Tx) error {
-	ctx, err := app.CreateQueryContext(0, false)
+	// The latest-context lookup fails in the short window after Commit
+	// before the check state is re-pointed (the same race STATUS.md records
+	// for the EVM rechecker). A few short retries close it; only if state
+	// is still unreadable do we defer to the ante handler, which enforces
+	// at recheck and in the block regardless.
+	var (
+		ctx sdk.Context
+		err error
+	)
+	for attempt := 0; attempt < compliancePreCheckAttempts; attempt++ {
+		if ctx, err = app.CreateQueryContext(0, false); err == nil {
+			break
+		}
+		time.Sleep(compliancePreCheckBackoff)
+	}
 	if err != nil {
+		app.Logger().Warn("compliance pre-check skipped: state not readable, ante handler will enforce", "err", err)
 		return nil
 	}
 	return complianceante.Check(ctx, app.appCodec, app.ComplianceKeeper, tx)
 }
+
+const (
+	compliancePreCheckAttempts = 5
+	compliancePreCheckBackoff  = 20 * time.Millisecond
+)
 
 // complianceMempool wraps the EVM mempool so the JSON-RPC path
 // (rpc/backend SendRawTransaction → Mempool.Insert) is pre-checked. Every
