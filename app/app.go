@@ -960,7 +960,11 @@ func (app *KonstellationApp) TxConfig() client.TxConfig {
 // defaults with every chain-specific value (denoms, EVM params, token pairs)
 // applied. `konstellationd init` writes this, so a freshly initialised node
 // needs no post-processing to be a valid Konstellation genesis.
-func (app *KonstellationApp) DefaultGenesis() map[string]json.RawMessage {
+// DefaultGenesis returns the chain's genesis for the given Cosmos chain-id.
+// Only the ENGINEERING.md §18 differences branch on it (config.ProfileFor);
+// everything else is the same on every network.
+func (app *KonstellationApp) DefaultGenesis(chainID string) map[string]json.RawMessage {
+	profile := evmconfig.ProfileFor(chainID)
 	genesis := app.BasicModuleManager.DefaultGenesis(app.appCodec)
 
 	genesis[minttypes.ModuleName] = app.appCodec.MustMarshalJSON(NewMintGenesisState())
@@ -986,12 +990,15 @@ func (app *KonstellationApp) DefaultGenesis() map[string]json.RawMessage {
 	genesis[slashingtypes.ModuleName] = app.appCodec.MustMarshalJSON(slashingGen)
 
 	govGen := govv1.DefaultGenesisState()
-	govGen.Params.MinDeposit = evmconfig.GovMinDeposit
-	govGen.Params.ExpeditedMinDeposit = evmconfig.GovExpeditedMinDeposit
-	// D11: voting period, quorum, threshold. ExpeditedVotingPeriod, VetoThreshold
-	// and ExpeditedThreshold stay at the SDK default — not named by D11.
-	votingPeriod := evmconfig.GovVotingPeriod
+	// Deposits and voting periods come from the network profile (§18: short on
+	// testnet, D11 values on mainnet). Quorum and thresholds do not vary.
+	govGen.Params.MinDeposit = profile.GovMinDeposit
+	govGen.Params.ExpeditedMinDeposit = profile.GovExpeditedMinDeposit
+	votingPeriod := profile.GovVotingPeriod
 	govGen.Params.VotingPeriod = &votingPeriod
+	expeditedVotingPeriod := profile.GovExpeditedVotingPeriod
+	govGen.Params.ExpeditedVotingPeriod = &expeditedVotingPeriod
+	// VetoThreshold and ExpeditedThreshold stay at the SDK default — not named by D11.
 	govGen.Params.Quorum = evmconfig.GovQuorum
 	govGen.Params.Threshold = evmconfig.GovThreshold
 	// Deposits are refunded unless the proposal is vetoed (decided 2026-09-15).

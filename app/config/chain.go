@@ -121,6 +121,11 @@ var (
 	GovThreshold    = "0.5"
 )
 
+// GovExpeditedVotingPeriod is the SDK default (1 day), set explicitly because
+// the testnet profile (network.go) overrides it and the two must be read
+// side by side.
+var GovExpeditedVotingPeriod = 24 * time.Hour
+
 // FeeMarketMinGasMultiplier (decided 2026-09-14): kept at the cosmos/evm
 // default (0.5 / 50%). Not itself a D10 or D11 item despite STATUS.md flagging
 // it alongside them — it's an anti-manipulation floor on the feemarket

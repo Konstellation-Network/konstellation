@@ -65,3 +65,28 @@ func TestEVMChainIDFor(t *testing.T) {
 		t.Fatal("local id collides with a real network")
 	}
 }
+
+// ENGINEERING.md §18: only the exact mainnet chain-id gets mainnet governance
+// timings; everything else — testnet-1, local, unknown, empty — is the short
+// testnet/dev profile. Mainnet must be named, never defaulted into.
+func TestProfileFor(t *testing.T) {
+	if got := ProfileFor(ChainIDMainnet); got.Name != MainnetProfile.Name {
+		t.Fatalf("mainnet chain-id got profile %q", got.Name)
+	}
+	for _, id := range []string{ChainIDTestnet, ChainIDLocal, "test-chain-abc123", "konstellation-2", ""} {
+		if got := ProfileFor(id); got.Name != TestnetProfile.Name {
+			t.Errorf("chain-id %q got profile %q, want testnet/dev", id, got.Name)
+		}
+	}
+	m, tn := MainnetProfile, TestnetProfile
+	if m.GovVotingPeriod != GovVotingPeriod || m.GovExpeditedVotingPeriod != GovExpeditedVotingPeriod ||
+		!m.GovMinDeposit.Equal(GovMinDeposit) || !m.GovExpeditedMinDeposit.Equal(GovExpeditedMinDeposit) {
+		t.Fatal("mainnet profile must be exactly the D11 constants")
+	}
+	if tn.GovVotingPeriod >= m.GovVotingPeriod || tn.GovExpeditedVotingPeriod >= m.GovExpeditedVotingPeriod {
+		t.Fatal("testnet governance must be faster than mainnet")
+	}
+	if !tn.GovMinDeposit.IsAllLTE(m.GovMinDeposit) {
+		t.Fatal("testnet deposit must not exceed mainnet")
+	}
+}
