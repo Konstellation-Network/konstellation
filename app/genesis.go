@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"slices"
 
 	erc20types "github.com/cosmos/evm/x/erc20/types"
 	feemarkettypes "github.com/cosmos/evm/x/feemarket/types"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/Konstellation-Network/konstellation/app/config"
 	"github.com/Konstellation-Network/konstellation/app/preinstalls"
+	complianceprecompile "github.com/Konstellation-Network/konstellation/x/compliance/precompile"
 )
 
 // GenesisState of the blockchain is represented here as a map of raw json
@@ -27,7 +29,8 @@ type GenesisState map[string]json.RawMessage
 // NewEVMGenesisState returns the default genesis state for the EVM module.
 //
 // Sets the base denom (native 18 decimals, so extended denom == base denom and
-// x/precisebank is not involved), enables all static precompiles, and installs
+// x/precisebank is not involved), enables all static precompiles (cosmos/evm's
+// plus the compliance precompile at 0x…0900), and installs
 // the upstream default preinstalls (Create2 factory, Multicall3, Permit2, Safe
 // singleton factory, EIP-2935) plus Konstellation's own: ERC-4337 EntryPoint
 // v0.7 and v0.8 (each with the SenderCreator its bytecode hard-references) and
@@ -38,7 +41,11 @@ func NewEVMGenesisState() *evmtypes.GenesisState {
 	evmGenState := evmtypes.DefaultGenesisState()
 	evmGenState.Params.EvmDenom = config.BaseDenom
 	evmGenState.Params.ExtendedDenomOptions = &evmtypes.ExtendedDenomOptions{ExtendedDenom: config.BaseDenom}
-	evmGenState.Params.ActiveStaticPrecompiles = evmtypes.AvailableStaticPrecompiles
+	// cosmos/evm's static precompiles plus Konstellation's compliance
+	// precompile (D6). x/vm requires the list sorted.
+	active := append(slices.Clone(evmtypes.AvailableStaticPrecompiles), complianceprecompile.Address)
+	slices.Sort(active)
+	evmGenState.Params.ActiveStaticPrecompiles = active
 
 	all, err := preinstalls.Merge(evmtypes.DefaultPreinstalls, preinstalls.MustLoad())
 	if err != nil {
