@@ -66,7 +66,11 @@ lint:
 vulncheck:
 	scripts/vulncheck.sh source
 
-vulncheck-binary: build
+# Always builds with symbols: govulncheck on a stripped binary falls back to
+# package-level matching and reports every advisory in an imported package
+# (x/crisis, blocksync, …) as reachable. CI passes nostrip explicitly too.
+vulncheck-binary:
+	$(MAKE) build COSMOS_BUILD_OPTIONS="$(COSMOS_BUILD_OPTIONS) nostrip"
 	scripts/vulncheck.sh binary $(BUILDDIR)/$(BINARY)
 
 # ENGINEERING.md §2.1 / §2.2 / §2.3.
