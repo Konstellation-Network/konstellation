@@ -113,6 +113,14 @@ func (m msgServer) UpdateParams(ctx context.Context, msg *types.MsgUpdateParams)
 	if !m.k.isGov(msg.Authority) {
 		return nil, errorsmod.Wrapf(types.ErrUnauthorized, "expected %s, got %s", m.k.govAuthority, msg.Authority)
 	}
+	// An authority that is itself frozen could not act (its txs would be
+	// rejected by the ante check). Refuse rather than install a dead one.
+	if msg.Params.Authority != "" {
+		addr, _ := types.ParseAddress(msg.Params.Authority)
+		if m.k.IsFrozen(ctx, addr) {
+			return nil, errorsmod.Wrapf(types.ErrAddressFrozen, "new authority %s is on the block list", msg.Params.Authority)
+		}
+	}
 	if err := m.k.Params.Set(ctx, msg.Params); err != nil {
 		return nil, err
 	}

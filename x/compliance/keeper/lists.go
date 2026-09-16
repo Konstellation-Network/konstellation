@@ -39,6 +39,11 @@ func (k Keeper) applyChange(ctx context.Context, c types.Change, by string) erro
 
 	switch c.Action {
 	case types.ACTION_ADD:
+		if c.List == types.LIST_BLOCK {
+			if err := k.checkFreezable(ctx, addr); err != nil {
+				return err
+			}
+		}
 		if err := k.dropExpiry(ctx, m, addr); err != nil {
 			return err
 		}
@@ -101,6 +106,9 @@ func (k Keeper) dropExpiry(ctx context.Context, m collections.Map[[]byte, types.
 // permanent entry is left alone: it is already stronger.
 func (k Keeper) emergencyFreeze(ctx context.Context, addr []byte, reason, by string, expiresAt time.Time) error {
 	sdkCtx := sdk.UnwrapSDKContext(ctx)
+	if err := k.checkFreezable(ctx, addr); err != nil {
+		return err
+	}
 	if e, err := k.Block.Get(ctx, addr); err == nil {
 		if e.ExpiresAt == nil {
 			return nil // already permanently frozen
@@ -200,6 +208,16 @@ func (k Keeper) extendEmergencyTo(ctx context.Context, addr []byte, until time.T
 func (k Keeper) schedule(ctx context.Context, changes []types.Change, by string) (types.PendingUpdate, error) {
 	sdkCtx := sdk.UnwrapSDKContext(ctx)
 	params := k.GetParams(ctx)
+	// Reject protected targets now; an EndBlock failure 24 h later would be
+	// the wrong place to learn about a typo in a 100-address batch.
+	for _, c := range changes {
+		if c.List == types.LIST_BLOCK && c.Action == types.ACTION_ADD {
+			addr, _ := types.ParseAddress(c.Address)
+			if err := k.checkFreezable(ctx, addr); err != nil {
+				return types.PendingUpdate{}, err
+			}
+		}
+	}
 	var delay time.Duration
 	for _, c := range changes {
 		if d := params.TimelockFor(c); d > delay {
@@ -272,6 +290,16 @@ func (k Keeper) cancel(ctx context.Context, id uint64, by string) error {
 func (k Keeper) execute(ctx context.Context, p types.PendingUpdate) error {
 	for _, c := range p.Changes {
 		if err := k.applyChange(ctx, c, p.ScheduledBy); err != nil {
+			if types.ErrProtectedAddress.Is(err) {
+				// The target became protected after scheduling (e.g. it is
+				// now the authority). Skip it, loudly; never fail EndBlock.
+				sdk.UnwrapSDKContext(ctx).EventManager().EmitEvent(sdk.NewEvent(types.EventTypeUpdateExecuted,
+					sdk.NewAttribute(types.AttributeKeyID, fmt.Sprint(p.Id)),
+					sdk.NewAttribute(types.AttributeKeyAddress, c.Address),
+					sdk.NewAttribute("skipped", err.Error()),
+				))
+				continue
+			}
 			return err
 		}
 	}

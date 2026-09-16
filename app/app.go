@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 
 	"github.com/ethereum/go-ethereum/common"
 	corevm "github.com/ethereum/go-ethereum/core/vm"
@@ -457,6 +458,7 @@ func New(
 		appCodec,
 		runtime.NewKVStoreService(keys[compliancetypes.StoreKey]),
 		authAddr,
+		protectedFromFreezing(),
 	)
 
 	// Cosmos EVM keepers
@@ -1045,6 +1047,21 @@ func (app *KonstellationApp) DefaultGenesis(chainID string) map[string]json.RawM
 	genesis[banktypes.ModuleName] = app.appCodec.MustMarshalJSON(bankGen)
 
 	return genesis
+}
+
+// protectedFromFreezing is the set of addresses x/compliance must never put
+// on the block list: every module account and precompile (the same set the
+// bank refuses to send to) plus governance. Freezing a module account is
+// meaningless — module accounts never sign — and would only make the
+// compliance precompile misreport to contracts.
+func protectedFromFreezing() []string {
+	blocked := evmconfig.BlockedAddresses()
+	out := make([]string, 0, len(blocked))
+	for a := range blocked {
+		out = append(out, a)
+	}
+	slices.Sort(out)
+	return out
 }
 
 // withCompliancePrecompile adds the read-only compliance precompile

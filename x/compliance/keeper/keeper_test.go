@@ -20,12 +20,13 @@ import (
 )
 
 var (
-	gov       = authtypes.NewModuleAddress(govtypes.ModuleName).String()
-	authority = sdk.AccAddress(common.HexToAddress("0x00000000000000000000000000000000000000A1").Bytes()).String()
-	stranger  = sdk.AccAddress(common.HexToAddress("0x00000000000000000000000000000000000000A2").Bytes()).String()
-	alice     = common.HexToAddress("0x1111111111111111111111111111111111111111")
-	bob       = common.HexToAddress("0x2222222222222222222222222222222222222222")
-	t0        = time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	gov          = authtypes.NewModuleAddress(govtypes.ModuleName).String()
+	feeCollector = authtypes.NewModuleAddress(authtypes.FeeCollectorName).String()
+	authority    = sdk.AccAddress(common.HexToAddress("0x00000000000000000000000000000000000000A1").Bytes()).String()
+	stranger     = sdk.AccAddress(common.HexToAddress("0x00000000000000000000000000000000000000A2").Bytes()).String()
+	alice        = common.HexToAddress("0x1111111111111111111111111111111111111111")
+	bob          = common.HexToAddress("0x2222222222222222222222222222222222222222")
+	t0           = time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 )
 
 type fixture struct {
@@ -41,7 +42,7 @@ func setup(t *testing.T) *fixture {
 	key := storetypes.NewKVStoreKey(types.StoreKey)
 	tc := testutil.DefaultContextWithDB(t, key, storetypes.NewTransientStoreKey("t_"+types.StoreKey))
 	cdc := moduletestutil.MakeTestEncodingConfig(compliance.AppModuleBasic{}).Codec
-	k := keeper.NewKeeper(cdc, runtime.NewKVStoreService(key), gov)
+	k := keeper.NewKeeper(cdc, runtime.NewKVStoreService(key), gov, []string{feeCollector})
 	ctx := tc.Ctx.WithBlockTime(t0).WithBlockHeight(1)
 	gs := types.DefaultGenesisState()
 	gs.Params.Authority = authority
@@ -449,5 +450,58 @@ func TestTimelockBoundsAndSecondGranularity(t *testing.T) {
 	_ = f.k.EndBlock(f.ctx)
 	if !f.k.IsVerified(f.ctx, bob.Bytes()) {
 		t.Fatal("not executed at execute_at")
+	}
+}
+
+// Human review of PR #10: module accounts, governance and the authority
+// itself can never be frozen, on any path — and the protected set is
+// checked at submission, not 24 h later in EndBlock.
+func TestProtectedAddressesCannotBeFrozen(t *testing.T) {
+	f := setup(t)
+	for _, victim := range []string{gov, feeCollector, authority} {
+		if _, err := f.ms.EmergencyFreeze(f.ctx, &types.MsgEmergencyFreeze{Authority: authority, Addresses: []string{victim}}); !types.ErrProtectedAddress.Is(err) {
+			t.Errorf("emergency freeze of %s: want ErrProtectedAddress, got %v", victim, err)
+		}
+		chg := []types.Change{{Address: victim, List: types.LIST_BLOCK, Action: types.ACTION_ADD}}
+		if _, err := f.ms.ScheduleUpdate(f.ctx, &types.MsgScheduleUpdate{Authority: authority, Changes: chg}); !types.ErrProtectedAddress.Is(err) {
+			t.Errorf("schedule freeze of %s: want ErrProtectedAddress, got %v", victim, err)
+		}
+		if _, err := f.ms.GovUpdate(f.ctx, &types.MsgGovUpdate{Authority: gov, Changes: chg}); !types.ErrProtectedAddress.Is(err) {
+			t.Errorf("gov freeze of %s: want ErrProtectedAddress, got %v", victim, err)
+		}
+		// allow-listing a protected address is harmless and permitted
+		allow := []types.Change{{Address: victim, List: types.LIST_ALLOW, Action: types.ACTION_ADD}}
+		if _, err := f.ms.GovUpdate(f.ctx, &types.MsgGovUpdate{Authority: gov, Changes: allow}); err != nil {
+			t.Errorf("allow-listing %s: %v", victim, err)
+		}
+	}
+	// a pending freeze whose target becomes the authority is skipped at
+	// execution, and EndBlock does not fail
+	if _, err := f.ms.ScheduleUpdate(f.ctx, &types.MsgScheduleUpdate{Authority: authority, Changes: []types.Change{change(alice, types.LIST_BLOCK, types.ACTION_ADD)}}); err != nil {
+		t.Fatal(err)
+	}
+	p := f.k.GetParams(f.ctx)
+	p.Authority = sdk.AccAddress(alice.Bytes()).String()
+	if _, err := f.ms.UpdateParams(f.ctx, &types.MsgUpdateParams{Authority: gov, Params: p}); err != nil {
+		t.Fatal(err)
+	}
+	f.advance(25 * time.Hour)
+	if f.k.IsFrozen(f.ctx, alice.Bytes()) {
+		t.Fatal("the authority got frozen by a pre-existing pending update")
+	}
+}
+
+func TestUpdateParamsRefusesFrozenAuthority(t *testing.T) {
+	f := setup(t)
+	_, _ = f.ms.GovUpdate(f.ctx, &types.MsgGovUpdate{Authority: gov, Changes: []types.Change{change(bob, types.LIST_BLOCK, types.ACTION_ADD)}})
+	p := f.k.GetParams(f.ctx)
+	p.Authority = sdk.AccAddress(bob.Bytes()).String()
+	if _, err := f.ms.UpdateParams(f.ctx, &types.MsgUpdateParams{Authority: gov, Params: p}); !types.ErrAddressFrozen.Is(err) {
+		t.Fatalf("want ErrAddressFrozen, got %v", err)
+	}
+	p.Timelock = 30 * time.Second
+	p.Authority = authority
+	if _, err := f.ms.UpdateParams(f.ctx, &types.MsgUpdateParams{Authority: gov, Params: p}); err == nil {
+		t.Fatal("timelock below MinTimelock accepted")
 	}
 }

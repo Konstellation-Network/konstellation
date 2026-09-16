@@ -16,6 +16,13 @@ const (
 	// MaxTimelock bounds both timelocks so a bad param can't lock the lists
 	// for years.
 	MaxTimelock = 90 * 24 * time.Hour
+	// MinTimelock is the floor. A timelock of seconds turns the design into
+	// "the authority has immediate unilateral power", which the 24 h default
+	// exists to prevent; a minute is enough for dev chains and makes any
+	// governance proposal that lowers a real network's timelock a visible
+	// act rather than an off-by-one. (ENGINEERING.md §18: dev/testnet use
+	// short values, mainnet 24 h.)
+	MinTimelock = time.Minute
 )
 
 // DefaultParams has no authority: until governance (or genesis) sets one,
@@ -36,10 +43,8 @@ func (p Params) Validate() error {
 			return fmt.Errorf("authority: %w", err)
 		}
 	}
-	// Strictly positive: with 0 an emergency freeze would expire in the block
-	// it was created and never bind.
-	if p.Timelock <= 0 || p.Timelock > MaxTimelock {
-		return fmt.Errorf("timelock %s out of range (0, %s]", p.Timelock, MaxTimelock)
+	if p.Timelock < MinTimelock || p.Timelock > MaxTimelock {
+		return fmt.Errorf("timelock %s out of range [%s, %s]", p.Timelock, MinTimelock, MaxTimelock)
 	}
 	if p.AllowlistAddTimelock < 0 || p.AllowlistAddTimelock > MaxTimelock {
 		return fmt.Errorf("allowlist_add_timelock %s out of range [0, %s]", p.AllowlistAddTimelock, MaxTimelock)

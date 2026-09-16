@@ -30,6 +30,11 @@ import (
 type Keeper struct {
 	cdc          codec.BinaryCodec
 	govAuthority string
+	// protected are addresses that may never be put on the block list:
+	// module accounts and precompiles (freezing them is meaningless and
+	// makes the precompile lie to contracts) and the governance account.
+	// The current list authority is protected dynamically, see isProtected.
+	protected map[string]struct{}
 
 	Schema      collections.Schema
 	Params      collections.Item[types.Params]
@@ -45,14 +50,27 @@ type Keeper struct {
 // NewKeeper builds the keeper. govAuthority is x/gov's module address: the
 // only signer that may GovUpdate / UpdateParams, and a superset of what the
 // list authority may do.
-func NewKeeper(cdc codec.BinaryCodec, storeService store.KVStoreService, govAuthority string) Keeper {
+//
+// protected is the set of bech32 addresses that can never be frozen (the
+// app passes its module accounts and precompiles); the gov authority is
+// always included.
+func NewKeeper(cdc codec.BinaryCodec, storeService store.KVStoreService, govAuthority string, protected []string) Keeper {
 	if _, err := sdk.AccAddressFromBech32(govAuthority); err != nil {
 		panic(fmt.Errorf("compliance: invalid gov authority %q: %w", govAuthority, err))
+	}
+	prot := make(map[string]struct{}, len(protected)+1)
+	for _, a := range append(protected, govAuthority) {
+		b, err := types.ParseAddress(a)
+		if err != nil {
+			panic(fmt.Errorf("compliance: invalid protected address %q: %w", a, err))
+		}
+		prot[string(b)] = struct{}{}
 	}
 	sb := collections.NewSchemaBuilder(storeService)
 	k := Keeper{
 		cdc:          cdc,
 		govAuthority: govAuthority,
+		protected:    prot,
 		Params:       collections.NewItem(sb, types.ParamsKey, "params", codec.CollValue[types.Params](cdc)),
 		Allow:        collections.NewMap(sb, types.AllowListKey, "allow", collections.BytesKey, codec.CollValue[types.ListEntry](cdc)),
 		Block:        collections.NewMap(sb, types.BlockListKey, "block", collections.BytesKey, codec.CollValue[types.ListEntry](cdc)),
@@ -162,4 +180,28 @@ func (k Keeper) FrozenUntilUnix(ctx sdk.Context, addr []byte) (bool, uint64) {
 		return frozen, 0
 	}
 	return true, uint64(until.Unix()) //nolint:gosec // block times are positive
+}
+
+// isProtected reports whether addr may never be frozen: a module account, a
+// precompile, governance, or whoever is currently the list authority (so
+// the authority cannot lock itself out with a fat-fingered batch — a
+// lockout that would take a full governance cycle to undo on mainnet).
+func (k Keeper) isProtected(ctx context.Context, addr []byte) bool {
+	if _, ok := k.protected[string(addr)]; ok {
+		return true
+	}
+	if a := k.GetParams(ctx).Authority; a != "" {
+		if b, err := types.ParseAddress(a); err == nil && string(b) == string(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkFreezable rejects a block-list add on a protected address.
+func (k Keeper) checkFreezable(ctx context.Context, addr []byte) error {
+	if k.isProtected(ctx, addr) {
+		return types.ErrProtectedAddress.Wrapf("%s", types.Bech32(addr))
+	}
+	return nil
 }
