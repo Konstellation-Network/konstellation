@@ -39,7 +39,16 @@ func initCmd(mm module.BasicManager, defaultNodeHome string, defaultGenesis func
 	lazy := &lazyGenesis{build: defaultGenesis}
 	overridden := make(module.BasicManager, len(mm))
 	for name, b := range mm {
-		overridden[name] = genesisOverride{AppModuleBasic: b, name: name, gen: lazy}
+		// Only modules with genesis methods are wrapped; the wrapper claims
+		// HasGenesisBasics, so it must have something to fall through to.
+		// (With NewBasicManagerFromManager every module is a core adaptor
+		// that satisfies this, so nothing is skipped in practice.)
+		hb, ok := b.(module.HasGenesisBasics)
+		if !ok {
+			overridden[name] = b
+			continue
+		}
+		overridden[name] = genesisOverride{AppModuleBasic: b, basics: hb, name: name, gen: lazy}
 	}
 
 	cmd := genutilcli.InitCmd(overridden, defaultNodeHome)
@@ -162,17 +171,22 @@ func setEVMChainID(appToml string, id uint64) error {
 	return nil
 }
 
-// lazyGenesis builds app.DefaultGenesis once, for the chain-id PreRunE
-// resolved, the first time any module asks for its default.
+// lazyGenesis builds app.DefaultGenesis for the chain-id PreRunE resolved,
+// the first time any module asks for its default. The build is cached per
+// chain-id, not per process: the command tree outlives a single run (tests,
+// in-process reuse of the root command), and a second `init` with another
+// --chain-id must get its own profile rather than the first run's.
 type lazyGenesis struct {
-	build   func(chainID string) map[string]json.RawMessage
-	chainID string
-	gen     map[string]json.RawMessage
+	build    func(chainID string) map[string]json.RawMessage
+	chainID  string
+	builtFor string
+	gen      map[string]json.RawMessage
 }
 
 func (l *lazyGenesis) get() map[string]json.RawMessage {
-	if l.gen == nil {
+	if l.gen == nil || l.builtFor != l.chainID {
 		l.gen = l.build(l.chainID)
+		l.builtFor = l.chainID
 	}
 	return l.gen
 }
@@ -182,8 +196,9 @@ func (l *lazyGenesis) get() map[string]json.RawMessage {
 // through to their own default.
 type genesisOverride struct {
 	module.AppModuleBasic
-	name string
-	gen  *lazyGenesis
+	basics module.HasGenesisBasics
+	name   string
+	gen    *lazyGenesis
 }
 
 var _ module.HasGenesisBasics = genesisOverride{}
@@ -192,15 +207,9 @@ func (g genesisOverride) DefaultGenesis(cdc codec.JSONCodec) json.RawMessage {
 	if raw, ok := g.gen.get()[g.name]; ok {
 		return raw
 	}
-	if v, ok := g.AppModuleBasic.(module.HasGenesisBasics); ok {
-		return v.DefaultGenesis(cdc)
-	}
-	return nil
+	return g.basics.DefaultGenesis(cdc)
 }
 
 func (g genesisOverride) ValidateGenesis(cdc codec.JSONCodec, txCfg client.TxEncodingConfig, data json.RawMessage) error {
-	if v, ok := g.AppModuleBasic.(module.HasGenesisBasics); ok {
-		return v.ValidateGenesis(cdc, txCfg, data)
-	}
-	return nil
+	return g.basics.ValidateGenesis(cdc, txCfg, data)
 }

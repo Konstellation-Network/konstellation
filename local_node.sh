@@ -239,12 +239,14 @@ if [[ $overwrite == "y" || $overwrite == "Y" ]]; then
   # Denoms, EVM params, token pairs and bank metadata come from app.DefaultGenesis()
   # via `konstellationd init` — do not patch them here; fix them in app/ instead.
   # Only dev-chain-specific tuning belongs below.
-  jq '.consensus.params.block.max_gas="10000000"' "$GENESIS" >"$TMP_GENESIS" && mv "$TMP_GENESIS" "$GENESIS"
-
-  # Change proposal periods
-  sed -i.bak 's/"max_deposit_period": "172800s"/"max_deposit_period": "30s"/g' "$GENESIS"
-  sed -i.bak 's/"voting_period": "172800s"/"voting_period": "30s"/g' "$GENESIS"
-  sed -i.bak 's/"expedited_voting_period": "86400s"/"expedited_voting_period": "15s"/g' "$GENESIS"
+  # Proposal periods are set by path, not by matching the literal defaults:
+  # the dev profile (app/config/network.go) already writes non-SDK values
+  # (2h / 30m), and a sed on the old literals would silently match nothing.
+  jq '.consensus.params.block.max_gas="10000000"
+    | .app_state.gov.params.max_deposit_period="30s"
+    | .app_state.gov.params.voting_period="30s"
+    | .app_state.gov.params.expedited_voting_period="15s"' \
+    "$GENESIS" >"$TMP_GENESIS" && mv "$TMP_GENESIS" "$GENESIS"
 
   # fund validator (devs already funded in the loop)
   konstellationd genesis add-genesis-account "$VAL_KEY" 100000000000000000000000000esp --keyring-backend "$KEYRING" --home "$CHAINDIR"
