@@ -242,10 +242,18 @@ if [[ $overwrite == "y" || $overwrite == "Y" ]]; then
   # Proposal periods are set by path, not by matching the literal defaults:
   # the dev profile (app/config/network.go) already writes non-SDK values
   # (2h / 30m), and a sed on the old literals would silently match nothing.
-  jq '.consensus.params.block.max_gas="10000000"
+  # Compliance (D6): the validator key is the list authority on a dev chain,
+  # with 60 s timelocks so scheduled updates and emergency expiries can be
+  # exercised in a session. Mainnet: foundation multisig, 24 h (TOKENOMICS /
+  # ENGINEERING.md §11 D6); set in networks/<net>/genesis.json, never here.
+  VAL_ADDR=$(konstellationd keys show "$VAL_KEY" -a --keyring-backend "$KEYRING" --home "$CHAINDIR")
+  jq --arg auth "$VAL_ADDR" '.consensus.params.block.max_gas="10000000"
     | .app_state.gov.params.max_deposit_period="30s"
     | .app_state.gov.params.voting_period="30s"
-    | .app_state.gov.params.expedited_voting_period="15s"' \
+    | .app_state.gov.params.expedited_voting_period="15s"
+    | .app_state.compliance.params.authority=$auth
+    | .app_state.compliance.params.timelock="60s"
+    | .app_state.compliance.params.allowlist_add_timelock="60s"' \
     "$GENESIS" >"$TMP_GENESIS" && mv "$TMP_GENESIS" "$GENESIS"
 
   # fund validator (devs already funded in the loop)
