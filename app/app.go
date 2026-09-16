@@ -81,6 +81,7 @@ import (
 	signingtypes "github.com/cosmos/cosmos-sdk/types/tx/signing"
 	"github.com/cosmos/cosmos-sdk/version"
 	"github.com/cosmos/cosmos-sdk/x/auth"
+	authante "github.com/cosmos/cosmos-sdk/x/auth/ante"
 	authkeeper "github.com/cosmos/cosmos-sdk/x/auth/keeper"
 	"github.com/cosmos/cosmos-sdk/x/auth/posthandler"
 	authsims "github.com/cosmos/cosmos-sdk/x/auth/simulation"
@@ -798,6 +799,20 @@ func New(
 }
 
 func (app *KonstellationApp) setAnteHandler(txConfig client.TxConfig, maxGasWanted uint64) {
+	// Pin the fee recipient before any tx can be processed.
+	//
+	// x/vm deducts EVM tx fees through the SDK's authante.DeductFees, which
+	// sends them to authante.FeeRecipientModule — a package-level global that
+	// is empty until NewDeductFeeDecorator runs. cosmos/evm builds its Cosmos
+	// ante chain lazily, per tx, so the global is only set once a Cosmos tx
+	// has gone through the ante handler in this process. A fresh chain gets
+	// that for free (InitChain delivers the gentxs); a restarted node does
+	// not, and its first EVM tx panics in the mempool with
+	// "module account  does not exist" (empty name). Reproduced on
+	// cosmos/evm v0.7.3, 2026-09-15; STATUS.md §2a. Setting it here makes
+	// fee routing independent of transaction order.
+	authante.FeeRecipientModule = authtypes.FeeCollectorName
+
 	options := evmante.HandlerOptions{
 		Cdc:                    app.appCodec,
 		AccountKeeper:          app.AccountKeeper,
