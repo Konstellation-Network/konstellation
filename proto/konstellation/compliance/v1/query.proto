@@ -1,0 +1,78 @@
+syntax = "proto3";
+package konstellation.compliance.v1;
+
+import "gogoproto/gogo.proto";
+import "google/api/annotations.proto";
+import "cosmos/base/query/v1beta1/pagination.proto";
+import "konstellation/compliance/v1/compliance.proto";
+
+option go_package = "github.com/Konstellation-Network/konstellation/x/compliance/types";
+
+// Query is the compliance query service.
+service Query {
+  // Params returns the module parameters.
+  rpc Params(QueryParamsRequest) returns (QueryParamsResponse) {
+    option (google.api.http).get = "/konstellation/compliance/v1/params";
+  }
+  // Status returns an address's standing on both lists.
+  rpc Status(QueryStatusRequest) returns (QueryStatusResponse) {
+    option (google.api.http).get = "/konstellation/compliance/v1/status/{address}";
+  }
+  // Entries pages through one list.
+  rpc Entries(QueryEntriesRequest) returns (QueryEntriesResponse) {
+    option (google.api.http).get = "/konstellation/compliance/v1/entries";
+  }
+  // PendingUpdates pages through scheduled updates.
+  rpc PendingUpdates(QueryPendingUpdatesRequest) returns (QueryPendingUpdatesResponse) {
+    option (google.api.http).get = "/konstellation/compliance/v1/pending";
+  }
+  // PendingUpdate returns one scheduled update.
+  rpc PendingUpdate(QueryPendingUpdateRequest) returns (QueryPendingUpdateResponse) {
+    option (google.api.http).get = "/konstellation/compliance/v1/pending/{id}";
+  }
+}
+
+message QueryParamsRequest {}
+
+message QueryParamsResponse {
+  Params params = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryStatusRequest {
+  // address in bech32 or 0x hex.
+  string address = 1;
+}
+
+message QueryStatusResponse {
+  bool verified = 1;
+  bool frozen = 2;
+  // entries present for this address (0, 1 or 2).
+  repeated ListEntry entries = 3 [(gogoproto.nullable) = false];
+}
+
+message QueryEntriesRequest {
+  List list = 1;
+  cosmos.base.query.v1beta1.PageRequest pagination = 2;
+}
+
+message QueryEntriesResponse {
+  repeated ListEntry entries = 1 [(gogoproto.nullable) = false];
+  cosmos.base.query.v1beta1.PageResponse pagination = 2;
+}
+
+message QueryPendingUpdatesRequest {
+  cosmos.base.query.v1beta1.PageRequest pagination = 1;
+}
+
+message QueryPendingUpdatesResponse {
+  repeated PendingUpdate pending = 1 [(gogoproto.nullable) = false];
+  cosmos.base.query.v1beta1.PageResponse pagination = 2;
+}
+
+message QueryPendingUpdateRequest {
+  uint64 id = 1;
+}
+
+message QueryPendingUpdateResponse {
+  PendingUpdate pending = 1 [(gogoproto.nullable) = false];
+}
