@@ -994,7 +994,16 @@ func (app *KonstellationApp) DefaultGenesis() map[string]json.RawMessage {
 	govGen.Params.VotingPeriod = &votingPeriod
 	govGen.Params.Quorum = evmconfig.GovQuorum
 	govGen.Params.Threshold = evmconfig.GovThreshold
+	// Deposits are refunded unless the proposal is vetoed (decided 2026-09-15).
+	govGen.Params.BurnVoteVeto = evmconfig.GovBurnVoteVeto
+	govGen.Params.BurnVoteQuorum = evmconfig.GovBurnVoteQuorum
+	govGen.Params.BurnProposalDepositPrevote = evmconfig.GovBurnProposalDepositPrevote
 	genesis[govtypes.ModuleName] = app.appCodec.MustMarshalJSON(govGen)
+
+	// Community tax kept at the SDK default, as a recorded decision (2026-09-15).
+	distrGen := distrtypes.DefaultGenesisState()
+	distrGen.Params.CommunityTax = evmconfig.DistributionCommunityTax
+	genesis[distrtypes.ModuleName] = app.appCodec.MustMarshalJSON(distrGen)
 
 	bankGen := banktypes.DefaultGenesisState()
 	bankGen.DenomMetadata = []banktypes.Metadata{evmconfig.DenomMetadata()}

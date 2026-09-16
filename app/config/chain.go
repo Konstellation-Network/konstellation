@@ -77,12 +77,37 @@ func DenomMetadata() banktypes.Metadata {
 	}
 }
 
-// Governance deposits (ENGINEERING.md D11, decided 2026-09-13): the SDK's
-// default 10 / 50 tokens, expressed in 18-decimal base units.
+// Governance deposits (ENGINEERING.md D11; raised 2026-09-15 from the SDK
+// default 10 / 50 once the 1 B KASH genesis supply was assumed): a spam bond,
+// refunded on every outcome except veto, so the level is about who can afford
+// to *propose*, not a cost. 1 000 KASH is 1e-6 of supply — comfortably inside
+// what a serious proposer holds, far above what a spammer wants to lock for
+// up to 5 days per proposal. See TOKENOMICS.md §5.
 var (
-	GovMinDeposit          = kash(10)
-	GovExpeditedMinDeposit = kash(50)
+	GovMinDeposit          = kash(1_000)
+	GovExpeditedMinDeposit = kash(5_000)
 )
+
+// Governance deposit burn rules (decided 2026-09-15): burn only on veto. These
+// are the SDK defaults, pinned so the "refundable unless vetoed" promise in
+// TOKENOMICS.md is a recorded decision and not an incidental default.
+const (
+	GovBurnVoteVeto               = true
+	GovBurnVoteQuorum             = false
+	GovBurnProposalDepositPrevote = false
+)
+
+// DistributionCommunityTax (decided 2026-09-15): 2 % of every block's issuance
+// and tips goes to the community pool, spendable only by governance. The SDK
+// default, kept — it funds audits and grants without a treasury allocation,
+// and is a gov param if that changes. TOKENOMICS.md §2.1.
+var DistributionCommunityTax = math.LegacyNewDecWithPrec(2, 2)
+
+// FeeMarketMinGasPrice (decided 2026-09-15): 0, the cosmos/evm default. The
+// EIP-1559 base fee is allowed to decay toward zero on an idle chain; there is
+// no protocol floor under it. A floor can be introduced later by gov param
+// without an upgrade. TOKENOMICS.md §3.
+var FeeMarketMinGasPrice = math.LegacyZeroDec()
 
 // Governance voting period, quorum and threshold (ENGINEERING.md D11, decided
 // 2026-09-14): 3 days at launch, per §11's "3-5 day, lengthen as the set

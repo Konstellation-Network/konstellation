@@ -162,9 +162,14 @@ write_mnemonics_yaml() {
 }
 
 # ---------- Add funded account ----------
+# 100 000 KASH per dev account: enough to post a mainnet-sized gov deposit
+# (1 000 / 5 000 KASH, app/config/chain.go) with gas to spare, so local
+# governance works from any dev key, not only the validator. Dev chain-ids
+# get the short 10 / 50 profile anyway (ENGINEERING.md §18), but the funding
+# should not depend on that.
 add_genesis_funds() {
   local keyname="$1"
-  konstellationd genesis add-genesis-account "$keyname" 1000000000000000000000esp --keyring-backend "$KEYRING" --home "$CHAINDIR"
+  konstellationd genesis add-genesis-account "$keyname" 100000000000000000000000esp --keyring-backend "$KEYRING" --home "$CHAINDIR"
 }
 
 # Setup local node if overwrite is set to Yes, otherwise skip setup
