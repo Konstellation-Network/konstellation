@@ -1,7 +1,10 @@
 package app
 
 import (
-	"runtime/debug"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -14,21 +17,22 @@ const pinnedEVM = "v0.7.3"
 // upstream review cannot skip the app-level couplings that upstream is free
 // to break silently.
 func TestUpstreamCouplingPins(t *testing.T) {
-	bi, ok := debug.ReadBuildInfo()
-	if !ok {
-		t.Skip("no build info")
+	// go.mod is read directly: debug.ReadBuildInfo's Deps are not populated
+	// in test binaries on every toolchain.
+	_, self, _, _ := runtime.Caller(0)
+	gomod, err := os.ReadFile(filepath.Join(filepath.Dir(self), "..", "go.mod"))
+	if err != nil {
+		t.Fatal(err)
 	}
 	var got string
-	for _, d := range bi.Deps {
-		if d.Path == "github.com/cosmos/evm" {
-			got = d.Version
-			if d.Replace != nil {
-				got = d.Replace.Version
-			}
+	for _, line := range strings.Split(string(gomod), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[0] == "github.com/cosmos/evm" {
+			got = f[1]
 		}
 	}
 	if got == "" {
-		t.Fatal("cosmos/evm not in build info")
+		t.Fatal("cosmos/evm not in go.mod")
 	}
 	if got != pinnedEVM {
 		t.Fatalf(`cosmos/evm is %s, pinned checks were done against %s. Re-verify and update pinnedEVM:
