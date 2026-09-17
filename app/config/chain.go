@@ -35,6 +35,11 @@ const (
 	// Cosmos chain-id it does not recognise (see EVMChainIDFor).
 	DefaultEVMChainID = EVMChainIDLocal
 
+	// CompliancePrecompileAddress is the D6 compliance precompile
+	// (x/compliance/precompile). 0x900 opens the Konstellation range above
+	// cosmos/evm's 0x100–0x807. Must equal precompile.Address (test-pinned).
+	CompliancePrecompileAddress = "0x0000000000000000000000000000000000000900"
+
 	// WKASHPrecompile is the address of the werc20 native precompile that wraps
 	// the base denom. Kept at the upstream default so wallet/tooling assumptions
 	// carry over; it is a precompile, not deployed bytecode.

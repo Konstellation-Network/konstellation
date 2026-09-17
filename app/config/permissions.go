@@ -2,6 +2,7 @@ package config
 
 import (
 	"maps"
+	"slices"
 	"sort"
 
 	corevm "github.com/ethereum/go-ethereum/core/vm"
@@ -39,7 +40,10 @@ func BlockedAddresses() map[string]bool {
 		blockedAddrs[authtypes.NewModuleAddress(acc).String()] = true
 	}
 
-	blockedPrecompilesHex := vmtypes.AvailableStaticPrecompiles
+	// Precompile addresses must never hold or receive funds. Includes the
+	// compliance precompile (x/compliance/precompile.Address, kept literal
+	// here to avoid an import cycle; pinned by test).
+	blockedPrecompilesHex := append(slices.Clone(vmtypes.AvailableStaticPrecompiles), CompliancePrecompileAddress)
 	for _, addr := range corevm.PrecompiledAddressesPrague {
 		blockedPrecompilesHex = append(blockedPrecompilesHex, addr.Hex())
 	}

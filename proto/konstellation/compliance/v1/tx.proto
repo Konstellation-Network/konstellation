@@ -1,0 +1,106 @@
+syntax = "proto3";
+package konstellation.compliance.v1;
+
+import "gogoproto/gogo.proto";
+import "cosmos_proto/cosmos.proto";
+import "cosmos/msg/v1/msg.proto";
+import "amino/amino.proto";
+import "google/protobuf/timestamp.proto";
+import "konstellation/compliance/v1/compliance.proto";
+
+option go_package = "github.com/Konstellation-Network/konstellation/x/compliance/types";
+
+// Msg is the compliance transaction service.
+service Msg {
+  option (cosmos.msg.v1.service) = true;
+
+  // ScheduleUpdate (list authority) queues changes that take effect after the
+  // timelock. Cancellable until then.
+  rpc ScheduleUpdate(MsgScheduleUpdate) returns (MsgScheduleUpdateResponse);
+  // CancelUpdate (list authority or governance) drops a pending update.
+  rpc CancelUpdate(MsgCancelUpdate) returns (MsgCancelUpdateResponse);
+  // EmergencyFreeze (list authority) freezes addresses immediately for one
+  // timelock period. To make it permanent, ScheduleUpdate an ACTION_ADD to
+  // LIST_BLOCK before it expires, or have governance do it.
+  rpc EmergencyFreeze(MsgEmergencyFreeze) returns (MsgEmergencyFreezeResponse);
+  // LiftEmergencyFreeze (list authority or governance) ends an emergency
+  // freeze early. Permanent entries are not affected.
+  rpc LiftEmergencyFreeze(MsgLiftEmergencyFreeze) returns (MsgLiftEmergencyFreezeResponse);
+  // GovUpdate (governance only) applies changes immediately: the override.
+  rpc GovUpdate(MsgGovUpdate) returns (MsgGovUpdateResponse);
+  // UpdateParams (governance only) replaces the params, including who the
+  // list authority is.
+  rpc UpdateParams(MsgUpdateParams) returns (MsgUpdateParamsResponse);
+}
+
+// MsgScheduleUpdate queues changes behind the timelock.
+message MsgScheduleUpdate {
+  option (cosmos.msg.v1.signer) = "authority";
+  option (amino.name) = "kons/compliance/MsgScheduleUpdate";
+
+  string authority = 1 [(cosmos_proto.scalar) = "cosmos.AddressString"];
+  repeated Change changes = 2 [(gogoproto.nullable) = false];
+}
+
+message MsgScheduleUpdateResponse {
+  uint64 id = 1;
+  google.protobuf.Timestamp execute_at = 2 [(gogoproto.stdtime) = true, (gogoproto.nullable) = false];
+}
+
+// MsgCancelUpdate drops a pending update.
+message MsgCancelUpdate {
+  option (cosmos.msg.v1.signer) = "authority";
+  option (amino.name) = "kons/compliance/MsgCancelUpdate";
+
+  string authority = 1 [(cosmos_proto.scalar) = "cosmos.AddressString"];
+  uint64 id = 2;
+}
+
+message MsgCancelUpdateResponse {}
+
+// MsgEmergencyFreeze freezes addresses now, for one timelock period.
+message MsgEmergencyFreeze {
+  option (cosmos.msg.v1.signer) = "authority";
+  option (amino.name) = "kons/compliance/MsgEmergencyFreeze";
+
+  string authority = 1 [(cosmos_proto.scalar) = "cosmos.AddressString"];
+  repeated string addresses = 2 [(cosmos_proto.scalar) = "cosmos.AddressString"];
+  string reason = 3;
+}
+
+message MsgEmergencyFreezeResponse {
+  google.protobuf.Timestamp expires_at = 1 [(gogoproto.stdtime) = true, (gogoproto.nullable) = false];
+}
+
+// MsgLiftEmergencyFreeze ends emergency freezes early.
+message MsgLiftEmergencyFreeze {
+  option (cosmos.msg.v1.signer) = "authority";
+  option (amino.name) = "kons/compliance/MsgLiftEmergencyFreeze";
+
+  string authority = 1 [(cosmos_proto.scalar) = "cosmos.AddressString"];
+  repeated string addresses = 2 [(cosmos_proto.scalar) = "cosmos.AddressString"];
+}
+
+message MsgLiftEmergencyFreezeResponse {}
+
+// MsgGovUpdate applies changes immediately. Governance only.
+message MsgGovUpdate {
+  option (cosmos.msg.v1.signer) = "authority";
+  option (amino.name) = "kons/compliance/MsgGovUpdate";
+
+  string authority = 1 [(cosmos_proto.scalar) = "cosmos.AddressString"];
+  repeated Change changes = 2 [(gogoproto.nullable) = false];
+}
+
+message MsgGovUpdateResponse {}
+
+// MsgUpdateParams replaces the params. Governance only.
+message MsgUpdateParams {
+  option (cosmos.msg.v1.signer) = "authority";
+  option (amino.name) = "kons/compliance/MsgUpdateParams";
+
+  string authority = 1 [(cosmos_proto.scalar) = "cosmos.AddressString"];
+  Params params = 2 [(gogoproto.nullable) = false];
+}
+
+message MsgUpdateParamsResponse {}

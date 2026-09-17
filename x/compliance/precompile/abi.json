@@ -1,0 +1,27 @@
+[
+  {
+    "type": "function",
+    "name": "isVerified",
+    "stateMutability": "view",
+    "inputs": [{ "name": "account", "type": "address" }],
+    "outputs": [{ "name": "", "type": "bool" }]
+  },
+  {
+    "type": "function",
+    "name": "isFrozen",
+    "stateMutability": "view",
+    "inputs": [{ "name": "account", "type": "address" }],
+    "outputs": [{ "name": "", "type": "bool" }]
+  },
+  {
+    "type": "function",
+    "name": "status",
+    "stateMutability": "view",
+    "inputs": [{ "name": "account", "type": "address" }],
+    "outputs": [
+      { "name": "verified", "type": "bool" },
+      { "name": "frozen", "type": "bool" },
+      { "name": "frozenUntil", "type": "uint64" }
+    ]
+  }
+]

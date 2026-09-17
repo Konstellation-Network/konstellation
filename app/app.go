@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 
 	"github.com/ethereum/go-ethereum/common"
+	corevm "github.com/ethereum/go-ethereum/core/vm"
 	"github.com/spf13/cast"
 
 	// Force-load the tracer engines to trigger registration due to Go-Ethereum v1.10.15 changes
@@ -21,7 +23,6 @@ import (
 	antetypes "github.com/cosmos/evm/ante/types"
 	evmencoding "github.com/cosmos/evm/encoding"
 	evmaddress "github.com/cosmos/evm/encoding/address"
-	evmmempool "github.com/cosmos/evm/mempool"
 	precompiletypes "github.com/cosmos/evm/precompiles/types"
 	cosmosevmserver "github.com/cosmos/evm/server"
 	srvflags "github.com/cosmos/evm/server/flags"
@@ -128,6 +129,11 @@ import (
 	upgradetypes "github.com/cosmos/cosmos-sdk/x/upgrade/types"
 
 	evmconfig "github.com/Konstellation-Network/konstellation/app/config"
+	"github.com/Konstellation-Network/konstellation/x/compliance"
+	complianceante "github.com/Konstellation-Network/konstellation/x/compliance/ante"
+	compliancekeeper "github.com/Konstellation-Network/konstellation/x/compliance/keeper"
+	complianceprecompile "github.com/Konstellation-Network/konstellation/x/compliance/precompile"
+	compliancetypes "github.com/Konstellation-Network/konstellation/x/compliance/types"
 )
 
 func init() {
@@ -182,6 +188,9 @@ type KonstellationApp struct {
 	EVMKeeper       *evmkeeper.Keeper
 	Erc20Keeper     erc20keeper.Keeper
 	EVMMempool      sdkmempool.ExtMempool
+
+	// Konstellation modules
+	ComplianceKeeper compliancekeeper.Keeper
 
 	// the module manager
 	ModuleManager      *module.Manager
@@ -243,6 +252,8 @@ func New(
 		ibcexported.StoreKey, ibctransfertypes.StoreKey,
 		// Cosmos EVM store keys
 		evmtypes.StoreKey, feemarkettypes.StoreKey, erc20types.StoreKey,
+		// Konstellation store keys
+		compliancetypes.StoreKey,
 	)
 	oKeys := storetypes.NewObjectStoreKeys(banktypes.ObjectStoreKey, evmtypes.ObjectKey)
 
@@ -441,6 +452,15 @@ func New(
 	// If evidence needs to be handled for the app, set routes in router here and seal
 	app.EvidenceKeeper = *evidenceKeeper
 
+	// D6 compliance lists. Built before the EVM keeper so the precompile can
+	// read them.
+	app.ComplianceKeeper = compliancekeeper.NewKeeper(
+		appCodec,
+		runtime.NewKVStoreService(keys[compliancetypes.StoreKey]),
+		authAddr,
+		protectedFromFreezing(),
+	)
+
 	// Cosmos EVM keepers
 	app.FeeMarketKeeper = feemarketkeeper.NewKeeper(
 		appCodec, authtypes.NewModuleAddress(govtypes.ModuleName),
@@ -476,17 +496,20 @@ func New(
 		evmChainID,
 		tracer,
 	).WithStaticPrecompiles(
-		precompiletypes.DefaultStaticPrecompiles(
-			*app.StakingKeeper,
-			app.DistrKeeper,
-			app.BankKeeper,
-			&app.Erc20Keeper,
-			app.TransferKeeper,
-			app.IBCKeeper.ChannelKeeper,
-			app.IBCKeeper.ClientKeeper,
-			app.GovKeeper,
-			app.SlashingKeeper,
-			appCodec,
+		withCompliancePrecompile(
+			precompiletypes.DefaultStaticPrecompiles(
+				*app.StakingKeeper,
+				app.DistrKeeper,
+				app.BankKeeper,
+				&app.Erc20Keeper,
+				app.TransferKeeper,
+				app.IBCKeeper.ChannelKeeper,
+				app.IBCKeeper.ClientKeeper,
+				app.GovKeeper,
+				app.SlashingKeeper,
+				appCodec,
+			),
+			app.ComplianceKeeper,
 		),
 	)
 
@@ -591,6 +614,8 @@ func New(
 		vmModule,
 		feemarket.NewAppModule(app.FeeMarketKeeper),
 		erc20.NewAppModule(app.Erc20Keeper, app.AccountKeeper),
+		// Konstellation modules
+		compliance.NewAppModule(app.ComplianceKeeper),
 	)
 
 	// BasicModuleManager defines the module BasicManager which is in charge of setting up basic,
@@ -639,6 +664,7 @@ func New(
 		authz.ModuleName, feegrant.ModuleName,
 		consensusparamtypes.ModuleName,
 		vestingtypes.ModuleName,
+		compliancetypes.ModuleName,
 	)
 
 	// NOTE: the feemarket module should go last in order of end blockers that are actually doing something,
@@ -648,6 +674,7 @@ func New(
 		govtypes.ModuleName,
 		stakingtypes.ModuleName,
 		authtypes.ModuleName,
+		compliancetypes.ModuleName, // applies due timelocked updates, sweeps lapsed freezes
 
 		// Cosmos EVM EndBlockers
 		evmtypes.ModuleName, erc20types.ModuleName, feemarkettypes.ModuleName,
@@ -681,6 +708,7 @@ func New(
 		ibctransfertypes.ModuleName,
 		genutiltypes.ModuleName, evidencetypes.ModuleName, authz.ModuleName,
 		feegrant.ModuleName, upgradetypes.ModuleName, vestingtypes.ModuleName,
+		compliancetypes.ModuleName,
 	}
 	app.ModuleManager.SetOrderInitGenesis(genesisModuleOrder...)
 	app.ModuleManager.SetOrderExportGenesis(genesisModuleOrder...)
@@ -832,7 +860,9 @@ func (app *KonstellationApp) setAnteHandler(txConfig client.TxConfig, maxGasWant
 		panic(err)
 	}
 
-	app.SetAnteHandler(evmante.NewAnteHandler(options))
+	// D6: after cosmos/evm's ante (so EVM senders are signature-verified),
+	// reject any tx that involves a frozen address. See x/compliance/ante.
+	app.SetAnteHandler(complianceante.Wrap(evmante.NewAnteHandler(options), app.appCodec, app.ComplianceKeeper))
 }
 
 func (app *KonstellationApp) onPendingTx(hash common.Hash) {
@@ -1019,6 +1049,32 @@ func (app *KonstellationApp) DefaultGenesis(chainID string) map[string]json.RawM
 	return genesis
 }
 
+// protectedFromFreezing is the set of addresses x/compliance must never put
+// on the block list: every module account and precompile (the same set the
+// bank refuses to send to) plus governance. Freezing a module account is
+// meaningless — module accounts never sign — and would only make the
+// compliance precompile misreport to contracts.
+func protectedFromFreezing() []string {
+	blocked := evmconfig.BlockedAddresses()
+	out := make([]string, 0, len(blocked))
+	for a := range blocked {
+		out = append(out, a)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// withCompliancePrecompile adds the read-only compliance precompile
+// (x/compliance/precompile) to cosmos/evm's static set at its fixed address.
+func withCompliancePrecompile(m map[common.Address]corevm.PrecompiledContract, k compliancekeeper.Keeper) map[common.Address]corevm.PrecompiledContract {
+	p := complianceprecompile.NewPrecompile(k)
+	if _, taken := m[p.Address()]; taken {
+		panic(fmt.Sprintf("compliance precompile address %s already registered", p.Address()))
+	}
+	m[p.Address()] = p
+	return m
+}
+
 // GetKey returns the KVStoreKey for the provided store key.
 //
 // NOTE: This is solely to be used for testing purposes.
@@ -1177,7 +1233,7 @@ func (app *KonstellationApp) GetTxConfig() client.TxConfig {
 // Close unsubscribes from the CometBFT event bus (if set) and closes the mempool and underlying BaseApp.
 func (app *KonstellationApp) Close() error {
 	var err error
-	if m, ok := app.EVMMempool.(*evmmempool.Mempool); ok && m != nil {
+	if m, ok := app.EVMMempool.(*complianceMempool); ok && m != nil && m.Mempool != nil {
 		app.Logger().Info("Shutting down mempool")
 		err = m.Close()
 	}

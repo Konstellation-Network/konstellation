@@ -34,7 +34,7 @@ ifneq (,$(findstring nooptimization,$(COSMOS_BUILD_OPTIONS)))
   BUILD_FLAGS += -gcflags "all=-N -l"
 endif
 
-.PHONY: all build build-linux install clean test test-unit lint vulncheck vulncheck-binary verify-deps localnet
+.PHONY: all build build-linux install clean test test-unit lint proto-gen proto-lint vulncheck vulncheck-binary verify-deps localnet
 
 all: build
 
@@ -61,6 +61,14 @@ test-unit:
 
 lint:
 	golangci-lint run ./...
+
+# Regenerates x/**/*.pb.go and *.pb.gw.go from proto/. Needs buf,
+# protoc-gen-gocosmos and protoc-gen-grpc-gateway on PATH.
+proto-gen:
+	scripts/protocgen.sh
+
+proto-lint:
+	cd proto && buf lint
 
 # ENGINEERING.md §4.3. Fails on any reachable finding not in .govulncheck-allowlist.
 vulncheck:
