@@ -55,6 +55,14 @@ func (gs GenesisState) Validate() error {
 				return fmt.Errorf("pending %d: scheduled_by: %w", i, err)
 			}
 		}
+		for j, x := range p.Extended {
+			if _, err := ParseAddress(x.Address); err != nil {
+				return fmt.Errorf("pending %d: extended %d: %w", i, j, err)
+			}
+			if x.OriginalExpiresAt.IsZero() {
+				return fmt.Errorf("pending %d: extended %d: zero original_expires_at", i, j)
+			}
+		}
 	}
 	if gs.NextPendingId == 0 {
 		return fmt.Errorf("next_pending_id must be ≥ 1")

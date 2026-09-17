@@ -179,16 +179,27 @@ func (k Keeper) startCooldown(ctx context.Context, addr []byte) error {
 // extendEmergencyTo pushes a live emergency freeze on addr out to at least
 // `until`. Called when a permanent block-list add is scheduled for the
 // address, so ratification never leaves an unfrozen gap between the
-// emergency expiry and the scheduled execute_at.
-func (k Keeper) extendEmergencyTo(ctx context.Context, addr []byte, until time.Time) error {
+// emergency expiry and the scheduled execute_at. Returns the expiry it
+// replaced so the caller can record it; nil if nothing was extended.
+func (k Keeper) extendEmergencyTo(ctx context.Context, addr []byte, until time.Time) (*time.Time, error) {
 	e, err := k.Block.Get(ctx, addr)
 	if err != nil || e.ExpiresAt == nil || !e.ExpiresAt.Before(until) {
-		return nil
+		return nil, nil
 	}
+	original := *e.ExpiresAt
+	if err := k.setExpiry(ctx, addr, e, until, "extended to scheduled ratification"); err != nil {
+		return nil, err
+	}
+	return &original, nil
+}
+
+// setExpiry moves a temporary block entry's expiry, keeping the index in
+// step.
+func (k Keeper) setExpiry(ctx context.Context, addr []byte, e types.ListEntry, to time.Time, reason string) error {
 	if err := k.ExpiryIndex.Remove(ctx, collections.Join(e.ExpiresAt.Unix(), addr)); err != nil {
 		return err
 	}
-	exp := until.Truncate(time.Second)
+	exp := to.Truncate(time.Second)
 	e.ExpiresAt = &exp
 	if err := k.Block.Set(ctx, addr, e); err != nil {
 		return err
@@ -199,9 +210,86 @@ func (k Keeper) extendEmergencyTo(ctx context.Context, addr []byte, until time.T
 	sdk.UnwrapSDKContext(ctx).EventManager().EmitEvent(sdk.NewEvent(types.EventTypeEmergencyFreeze,
 		sdk.NewAttribute(types.AttributeKeyAddress, types.Bech32(addr)),
 		sdk.NewAttribute(types.AttributeKeyExpiresAt, exp.UTC().Format(time.RFC3339)),
-		sdk.NewAttribute(types.AttributeKeyReason, "extended to scheduled ratification"),
+		sdk.NewAttribute(types.AttributeKeyReason, reason),
 	))
 	return nil
+}
+
+// lapse drops a temporary block entry the way EndBlock does when its expiry
+// passes: entry and index row gone, cooldown started, entry_expired emitted.
+func (k Keeper) lapse(ctx context.Context, addr []byte, e types.ListEntry) error {
+	if err := k.ExpiryIndex.Remove(ctx, collections.Join(e.ExpiresAt.Unix(), addr)); err != nil {
+		return err
+	}
+	if err := k.Block.Remove(ctx, addr); err != nil {
+		return err
+	}
+	if err := k.startCooldown(ctx, addr); err != nil {
+		return err
+	}
+	sdk.UnwrapSDKContext(ctx).EventManager().EmitEvent(sdk.NewEvent(types.EventTypeEntryExpired,
+		sdk.NewAttribute(types.AttributeKeyAddress, types.Bech32(addr)),
+		sdk.NewAttribute(types.AttributeKeyExpiresAt, e.ExpiresAt.UTC().Format(time.RFC3339)),
+	))
+	return nil
+}
+
+// restoreExtension undoes what scheduling update `cancelled` did to addr's
+// emergency freeze. The freeze goes back to `original`, or further out if
+// another pending block-list add still ratifies it (that update inherits
+// the record so its own cancellation restores correctly). If the restored
+// expiry has already passed, the freeze lapses now with the usual cooldown.
+func (k Keeper) restoreExtension(ctx context.Context, addr []byte, original time.Time, cancelled types.PendingUpdate) error {
+	e, err := k.Block.Get(ctx, addr)
+	if err != nil || e.ExpiresAt == nil {
+		return nil // lifted, or ratified by a permanent entry meanwhile
+	}
+	target := original
+	var heir *types.PendingUpdate
+	if err := k.Pending.Walk(ctx, nil, func(_ uint64, q types.PendingUpdate) (bool, error) {
+		for _, c := range q.Changes {
+			if c.List != types.LIST_BLOCK || c.Action != types.ACTION_ADD {
+				continue
+			}
+			if a, _ := types.ParseAddress(c.Address); string(a) != string(addr) {
+				continue
+			}
+			if q.ExecuteAt.After(target) {
+				target = q.ExecuteAt
+				qq := q
+				heir = &qq
+			}
+		}
+		return false, nil
+	}); err != nil {
+		return err
+	}
+	if heir != nil {
+		// The heir may itself hold a record, taken when it extended from
+		// *our* extension; the earliest original is the true one.
+		found := false
+		for i, x := range heir.Extended {
+			if x.Address == types.Bech32(addr) {
+				found = true
+				if original.Before(x.OriginalExpiresAt) {
+					heir.Extended[i].OriginalExpiresAt = original
+				}
+			}
+		}
+		if !found {
+			heir.Extended = append(heir.Extended, types.ExtendedFreeze{Address: types.Bech32(addr), OriginalExpiresAt: original})
+		}
+		if err := k.Pending.Set(ctx, heir.Id, *heir); err != nil {
+			return err
+		}
+	}
+	if target.Equal(*e.ExpiresAt) {
+		return nil
+	}
+	if !target.After(sdk.UnwrapSDKContext(ctx).BlockTime()) {
+		return k.lapse(ctx, addr, e)
+	}
+	return k.setExpiry(ctx, addr, e, target, fmt.Sprintf("restored after cancelling update %d", cancelled.Id))
 }
 
 // schedule queues changes to execute once every change's timelock has run.
@@ -234,21 +322,26 @@ func (k Keeper) schedule(ctx context.Context, changes []types.Change, by string)
 		ExecuteAt:   sdkCtx.BlockTime().Add(delay).Truncate(time.Second), // index keys are whole seconds
 		ScheduledBy: by,
 	}
+	// A scheduled permanent freeze ratifies a live emergency freeze: keep
+	// the address frozen through to execute_at, and remember what the
+	// expiry was so cancelling puts it back.
+	for _, c := range changes {
+		if c.List == types.LIST_BLOCK && c.Action == types.ACTION_ADD {
+			addr, _ := types.ParseAddress(c.Address)
+			original, err := k.extendEmergencyTo(ctx, addr, p.ExecuteAt)
+			if err != nil {
+				return types.PendingUpdate{}, err
+			}
+			if original != nil {
+				p.Extended = append(p.Extended, types.ExtendedFreeze{Address: types.Bech32(addr), OriginalExpiresAt: *original})
+			}
+		}
+	}
 	if err := k.Pending.Set(ctx, id, p); err != nil {
 		return types.PendingUpdate{}, err
 	}
 	if err := k.ExecIndex.Set(ctx, collections.Join(p.ExecuteAt.Unix(), id)); err != nil {
 		return types.PendingUpdate{}, err
-	}
-	// A scheduled permanent freeze ratifies a live emergency freeze: keep
-	// the address frozen through to execute_at.
-	for _, c := range changes {
-		if c.List == types.LIST_BLOCK && c.Action == types.ACTION_ADD {
-			addr, _ := types.ParseAddress(c.Address)
-			if err := k.extendEmergencyTo(ctx, addr, p.ExecuteAt); err != nil {
-				return types.PendingUpdate{}, err
-			}
-		}
 	}
 	sdkCtx.EventManager().EmitEvent(sdk.NewEvent(types.EventTypeUpdateScheduled,
 		sdk.NewAttribute(types.AttributeKeyID, fmt.Sprint(id)),
@@ -267,17 +360,30 @@ func (k Keeper) schedule(ctx context.Context, changes []types.Change, by string)
 	return p, nil
 }
 
-// cancel drops a pending update.
+// cancel drops a pending update and puts back any emergency freeze it had
+// extended. Without the restore, schedule-then-cancel every timelock would
+// keep an address frozen indefinitely with no ratification and no cooldown.
 func (k Keeper) cancel(ctx context.Context, id uint64, by string) error {
 	p, err := k.Pending.Get(ctx, id)
 	if err != nil {
 		return types.ErrPendingNotFound.Wrapf("id %d", id)
+	}
+	// Governance is a superset of the list authority, not the reverse: the
+	// authority must not be able to undo a passed proposal.
+	if k.isGov(p.ScheduledBy) && !k.isGov(by) {
+		return types.ErrGovScheduled.Wrapf("id %d", id)
 	}
 	if err := k.ExecIndex.Remove(ctx, collections.Join(p.ExecuteAt.Unix(), id)); err != nil {
 		return err
 	}
 	if err := k.Pending.Remove(ctx, id); err != nil {
 		return err
+	}
+	for _, x := range p.Extended {
+		addr, _ := types.ParseAddress(x.Address)
+		if err := k.restoreExtension(ctx, addr, x.OriginalExpiresAt, p); err != nil {
+			return err
+		}
 	}
 	sdk.UnwrapSDKContext(ctx).EventManager().EmitEvent(sdk.NewEvent(types.EventTypeUpdateCancelled,
 		sdk.NewAttribute(types.AttributeKeyID, fmt.Sprint(id)),

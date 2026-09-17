@@ -84,6 +84,18 @@ message PendingUpdate {
   google.protobuf.Timestamp execute_at = 3 [(gogoproto.stdtime) = true, (gogoproto.nullable) = false];
   // scheduled_by is the authority that scheduled it.
   string scheduled_by = 4 [(cosmos_proto.scalar) = "cosmos.AddressString"];
+  // extended lists the emergency freezes that scheduling this update pushed
+  // out to execute_at (a scheduled permanent block ratifies a live emergency
+  // freeze). Cancelling the update restores each to its original expiry, so
+  // schedule-then-cancel cannot keep an address frozen past one timelock.
+  repeated ExtendedFreeze extended = 5 [(gogoproto.nullable) = false];
+}
+
+// ExtendedFreeze records the expiry an emergency freeze had before a
+// scheduled update extended it.
+message ExtendedFreeze {
+  string address = 1 [(cosmos_proto.scalar) = "cosmos.AddressString"];
+  google.protobuf.Timestamp original_expires_at = 2 [(gogoproto.stdtime) = true, (gogoproto.nullable) = false];
 }
 
 // Cooldown records that an address may not be emergency-frozen again before

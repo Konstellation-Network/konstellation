@@ -8,6 +8,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/holiman/uint256"
 	protov2 "google.golang.org/protobuf/proto"
 
 	evmtypes "github.com/cosmos/evm/x/vm/types"
@@ -137,6 +139,49 @@ func TestInvolvedAddresses_EVMSenderAndTo(t *testing.T) {
 	got, err = ante.InvolvedAddresses(cdc, fakeTx{msgs: []sdk.Msg{msg2}})
 	if err != nil || !has(got, alice) || len(got) != 1 {
 		t.Fatalf("contract creation: %x %v", got, err)
+	}
+}
+
+// EIP-7702: the authority of every authorization is a signer. A frozen EOA
+// must not be able to have code installed on it by a clean relayer's tx.
+func TestInvolvedAddresses_EVM7702Authorities(t *testing.T) {
+	cdc := testCodec(t)
+	frozenKey, _ := crypto.GenerateKey()
+	frozen := crypto.PubkeyToAddress(frozenKey.PublicKey)
+
+	auth, err := ethtypes.SignSetCode(frozenKey, ethtypes.SetCodeAuthorization{
+		ChainID: *uint256.NewInt(5667), Address: carol, Nonce: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// an authorization whose signature does not recover involves nobody
+	// (the EVM skips it too); it must not make the extractor fail
+	garbage := ethtypes.SetCodeAuthorization{ChainID: *uint256.NewInt(5667), Address: carol, V: 7}
+
+	relay := ethtypes.NewTx(&ethtypes.SetCodeTx{
+		ChainID: uint256.NewInt(5667), Nonce: 0, To: alice, Gas: 100000,
+		GasTipCap: uint256.NewInt(1), GasFeeCap: uint256.NewInt(1),
+		AuthList: []ethtypes.SetCodeAuthorization{auth, garbage},
+	})
+	msg := &evmtypes.MsgEthereumTx{}
+	msg.FromEthereumTx(relay)
+	msg.From = alice.Bytes() // relayer is alice; the frozen key never signs the tx itself
+
+	got, err := ante.InvolvedAddresses(cdc, fakeTx{msgs: []sdk.Msg{msg}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !has(got, frozen) {
+		t.Fatalf("7702 authority missing from involved set: %x", got)
+	}
+	if !has(got, alice) {
+		t.Fatalf("relayer missing: %x", got)
+	}
+	// and Check refuses the tx when only the authority is frozen
+	err = ante.Check(sdk.Context{}, cdc, fakeLists{frozen: map[common.Address]bool{frozen: true}, enforce: true}, fakeTx{msgs: []sdk.Msg{msg}})
+	if !comptypes.ErrAddressFrozen.Is(err) {
+		t.Fatalf("relayed 7702 delegation for a frozen EOA accepted: %v", err)
 	}
 }
 

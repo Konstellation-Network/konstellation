@@ -4,7 +4,8 @@
 // A transaction is rejected if any address it involves is frozen. "Involves"
 // means, for every message, including messages nested in authz MsgExec:
 //
-//   - every signer (Cosmos signers and the verified EVM sender);
+//   - every signer (Cosmos signers and the verified EVM sender), including
+//     the authority of every EIP-7702 authorization an EVM tx carries;
 //   - the fee payer and fee granter;
 //   - direct transfer recipients the chain can see at ante time: bank
 //     MsgSend / MsgMultiSend outputs, vesting-account creation targets,
@@ -15,8 +16,12 @@
 // to a frozen address made by a contract call, an internal call). That is
 // what the compliance precompile is for — contracts that must not serve a
 // frozen address call isFrozen() themselves. Freezing an EOA therefore
-// guarantees it can never sign again and can never be the direct recipient
-// of a native transfer; it does not guarantee no token ever reaches it.
+// guarantees it can never sign again — neither a transaction nor a 7702
+// authorization — and can never be the direct recipient of a native
+// transfer; it does not guarantee no token ever reaches it. Nor does it
+// undo a 7702 delegation installed *before* the freeze: an internal call to
+// such an account still runs the delegated code, so a freeze on a
+// delegated EOA should be paired with a governance or EVM-level code reset.
 //
 // The check runs after cosmos/evm's ante handler so EVM senders are the
 // signature-verified ones, and it runs in CheckTx, the mempool recheck and
@@ -135,6 +140,16 @@ func msgAddresses(cdc codec.Codec, msg sdk.Msg, depth int) ([][]byte, error) {
 		if ethTx := m.AsTransaction(); ethTx != nil {
 			if to := ethTx.To(); to != nil {
 				out = append(out, to.Bytes())
+			}
+			// EIP-7702: every authorization is a signature by its authority,
+			// and a relayer's type-4 tx would otherwise install code on a
+			// frozen EOA that any contract can then call to move its funds.
+			// An authorization whose signature does not recover is skipped
+			// by the EVM too, so it involves nobody.
+			for _, a := range ethTx.SetCodeAuthorizations() {
+				if authority, err := a.Authority(); err == nil {
+					out = append(out, authority.Bytes())
+				}
 			}
 		}
 		return out, nil

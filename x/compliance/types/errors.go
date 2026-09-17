@@ -13,4 +13,5 @@ var (
 	ErrReasonTooLong      = errorsmod.Register(ModuleName, 9, "reason too long")
 	ErrEmergencyCooldown  = errorsmod.Register(ModuleName, 10, "address is under an emergency freeze or its cooldown; ratify through a scheduled update or governance")
 	ErrProtectedAddress   = errorsmod.Register(ModuleName, 11, "address cannot be frozen: module account, precompile, governance or the list authority")
+	ErrGovScheduled       = errorsmod.Register(ModuleName, 12, "update was scheduled by governance; only governance can cancel it")
 )

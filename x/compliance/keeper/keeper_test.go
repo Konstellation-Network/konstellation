@@ -424,6 +424,123 @@ func TestEmergencyFreezeCannotBeChained(t *testing.T) {
 }
 
 // PR #10 review #3/#4: timelock must be positive; timestamps are whole seconds.
+func TestAuthorityCannotCancelGovScheduledUpdate(t *testing.T) {
+	f := setup(t)
+	res, err := f.ms.ScheduleUpdate(f.ctx, &types.MsgScheduleUpdate{Authority: gov, Changes: []types.Change{change(alice, types.LIST_BLOCK, types.ACTION_ADD)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.ms.CancelUpdate(f.ctx, &types.MsgCancelUpdate{Authority: authority, Id: res.Id}); !types.ErrGovScheduled.Is(err) {
+		t.Fatalf("authority cancelling a gov-scheduled update: want ErrGovScheduled, got %v", err)
+	}
+	if _, err := f.k.Pending.Get(f.ctx, res.Id); err != nil {
+		t.Fatal("update was removed despite the refusal")
+	}
+	if _, err := f.ms.CancelUpdate(f.ctx, &types.MsgCancelUpdate{Authority: gov, Id: res.Id}); err != nil {
+		t.Fatalf("gov cancelling its own update: %v", err)
+	}
+	// and gov can still cancel the authority's updates
+	res, _ = f.ms.ScheduleUpdate(f.ctx, &types.MsgScheduleUpdate{Authority: authority, Changes: []types.Change{change(bob, types.LIST_ALLOW, types.ACTION_ADD)}})
+	if _, err := f.ms.CancelUpdate(f.ctx, &types.MsgCancelUpdate{Authority: gov, Id: res.Id}); err != nil {
+		t.Fatalf("gov cancelling the authority's update: %v", err)
+	}
+}
+
+func TestScheduleThenCancelCannotChainEmergencyFreeze(t *testing.T) {
+	// Scheduling a permanent block extends a live emergency freeze to
+	// execute_at (no ratification gap). Cancelling must put the expiry back,
+	// otherwise schedule/cancel every timelock keeps the address frozen
+	// forever with no ratification and no cooldown ever starting.
+	f := setup(t)
+	freeze := &types.MsgEmergencyFreeze{Authority: authority, Addresses: []string{alice.Hex()}}
+	if _, err := f.ms.EmergencyFreeze(f.ctx, freeze); err != nil {
+		t.Fatal(err)
+	}
+	orig := *mustBlock(t, f, alice).ExpiresAt // t0 + 24h
+
+	// 1. schedule then cancel before the original expiry: expiry restored
+	f.advance(23 * time.Hour)
+	res, err := f.ms.ScheduleUpdate(f.ctx, &types.MsgScheduleUpdate{Authority: authority, Changes: []types.Change{change(alice, types.LIST_BLOCK, types.ACTION_ADD)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := *mustBlock(t, f, alice).ExpiresAt; !got.Equal(res.ExecuteAt) {
+		t.Fatalf("schedule did not extend: %v vs %v", got, res.ExecuteAt)
+	}
+	if _, err := f.ms.CancelUpdate(f.ctx, &types.MsgCancelUpdate{Authority: authority, Id: res.Id}); err != nil {
+		t.Fatal(err)
+	}
+	if got := *mustBlock(t, f, alice).ExpiresAt; !got.Equal(orig) {
+		t.Fatalf("cancel did not restore the expiry: %v, want %v", got, orig)
+	}
+	f.advance(2 * time.Hour) // past orig
+	if f.k.IsFrozen(f.ctx, alice.Bytes()) {
+		t.Fatal("emergency freeze survived its original expiry after schedule/cancel")
+	}
+	if _, err := f.ms.EmergencyFreeze(f.ctx, freeze); !types.ErrEmergencyCooldown.Is(err) {
+		t.Fatalf("cooldown must apply after lapse: %v", err)
+	}
+
+	// 2. schedule, then cancel *after* the original expiry would have
+	// passed: the freeze lapses at cancel time, with cooldown
+	f.advance(25 * time.Hour) // cooldown over
+	if _, err := f.ms.EmergencyFreeze(f.ctx, freeze); err != nil {
+		t.Fatal(err)
+	}
+	f.advance(23 * time.Hour)
+	res, err = f.ms.ScheduleUpdate(f.ctx, &types.MsgScheduleUpdate{Authority: authority, Changes: []types.Change{change(alice, types.LIST_BLOCK, types.ACTION_ADD)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.advance(10 * time.Hour) // original expiry is 9 h in the past; extension keeps it frozen
+	if !f.k.IsFrozen(f.ctx, alice.Bytes()) {
+		t.Fatal("extension did not hold")
+	}
+	if _, err := f.ms.CancelUpdate(f.ctx, &types.MsgCancelUpdate{Authority: authority, Id: res.Id}); err != nil {
+		t.Fatal(err)
+	}
+	if f.k.IsFrozen(f.ctx, alice.Bytes()) {
+		t.Fatal("cancel after the original expiry must lapse the freeze")
+	}
+	if _, err := f.ms.EmergencyFreeze(f.ctx, freeze); !types.ErrEmergencyCooldown.Is(err) {
+		t.Fatalf("cooldown must apply after lapse-by-cancel: %v", err)
+	}
+
+	// 3. two ratifying updates: cancelling the first hands the record to
+	// the second, so the freeze holds to the second's execute_at and no
+	// longer, and cancelling the second restores the true original
+	f.advance(25 * time.Hour)
+	if _, err := f.ms.EmergencyFreeze(f.ctx, freeze); err != nil {
+		t.Fatal(err)
+	}
+	orig = *mustBlock(t, f, alice).ExpiresAt
+	f.advance(time.Hour)
+	first, _ := f.ms.ScheduleUpdate(f.ctx, &types.MsgScheduleUpdate{Authority: authority, Changes: []types.Change{change(alice, types.LIST_BLOCK, types.ACTION_ADD)}})
+	f.advance(time.Hour)
+	second, _ := f.ms.ScheduleUpdate(f.ctx, &types.MsgScheduleUpdate{Authority: authority, Changes: []types.Change{change(alice, types.LIST_BLOCK, types.ACTION_ADD)}})
+	if _, err := f.ms.CancelUpdate(f.ctx, &types.MsgCancelUpdate{Authority: authority, Id: first.Id}); err != nil {
+		t.Fatal(err)
+	}
+	if got := *mustBlock(t, f, alice).ExpiresAt; !got.Equal(second.ExecuteAt) {
+		t.Fatalf("after cancelling the first, expiry should follow the second: %v vs %v", got, second.ExecuteAt)
+	}
+	if _, err := f.ms.CancelUpdate(f.ctx, &types.MsgCancelUpdate{Authority: authority, Id: second.Id}); err != nil {
+		t.Fatal(err)
+	}
+	if got := *mustBlock(t, f, alice).ExpiresAt; !got.Equal(orig) {
+		t.Fatalf("after cancelling both, expiry should be the true original: %v vs %v", got, orig)
+	}
+}
+
+func mustBlock(t *testing.T, f *fixture, addr common.Address) types.ListEntry {
+	t.Helper()
+	e, err := f.k.Block.Get(f.ctx, addr.Bytes())
+	if err != nil {
+		t.Fatalf("%s not on block list: %v", addr.Hex(), err)
+	}
+	return e
+}
+
 func TestTimelockBoundsAndSecondGranularity(t *testing.T) {
 	p := types.DefaultParams()
 	p.Timelock = 0
