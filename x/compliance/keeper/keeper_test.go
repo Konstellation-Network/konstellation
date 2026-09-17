@@ -511,8 +511,10 @@ func TestGenesisRefusesProtectedFreeze(t *testing.T) {
 
 		// a pending block-add is rejected too, not left as dead weight
 		gs.Entries = nil
-		gs.Pending = []types.PendingUpdate{{Id: 1, ExecuteAt: t0.Add(time.Hour), ScheduledBy: authority,
-			Changes: []types.Change{{Address: victim, List: types.LIST_BLOCK, Action: types.ACTION_ADD}}}}
+		gs.Pending = []types.PendingUpdate{{
+			Id: 1, ExecuteAt: t0.Add(time.Hour), ScheduledBy: authority,
+			Changes: []types.Change{{Address: victim, List: types.LIST_BLOCK, Action: types.ACTION_ADD}},
+		}}
 		gs.NextPendingId = 2
 		if err := f.k.InitGenesis(f.ctx, *gs); !types.ErrProtectedAddress.Is(err) {
 			t.Errorf("genesis pending freeze of %s: want ErrProtectedAddress, got %v", victim, err)
