@@ -183,6 +183,20 @@ func TestInvolvedAddresses_EVM7702Authorities(t *testing.T) {
 	if !comptypes.ErrAddressFrozen.Is(err) {
 		t.Fatalf("relayed 7702 delegation for a frozen EOA accepted: %v", err)
 	}
+
+	// an oversized authorization list is refused before any recovery: the
+	// pre-check runs ahead of gas validation and must not be a free
+	// ecrecover amplifier
+	flood := make([]ethtypes.SetCodeAuthorization, 1025)
+	for i := range flood {
+		flood[i] = garbage
+	}
+	msg = &evmtypes.MsgEthereumTx{}
+	msg.FromEthereumTx(ethtypes.NewTx(&ethtypes.SetCodeTx{ChainID: uint256.NewInt(5667), To: alice, Gas: 1, GasTipCap: uint256.NewInt(1), GasFeeCap: uint256.NewInt(1), AuthList: flood}))
+	msg.From = alice.Bytes()
+	if _, err := ante.InvolvedAddresses(cdc, fakeTx{msgs: []sdk.Msg{msg}}); err == nil {
+		t.Fatal("1025 authorizations accepted")
+	}
 }
 
 func TestInvolvedAddresses_AuthzNested(t *testing.T) {

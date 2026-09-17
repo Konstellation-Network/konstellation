@@ -56,6 +56,14 @@ type FreezeChecker interface {
 	Enforce(ctx context.Context) bool
 }
 
+// maxAuthorizations bounds the EIP-7702 authorizations the check will
+// recover. Recovery is an ecrecover (~25 µs) each and the mempool pre-check
+// runs before any gas or signature validation, so without a bound a 1 MiB
+// garbage tx could cost ~10k recoveries. Each authorization carries 25 000
+// intrinsic gas, so a tx over this cap needs >25.6 M gas and could not
+// execute in any block we run; raise it if the block gas limit ever does.
+const maxAuthorizations = 1024
+
 // maxAuthzDepth bounds MsgExec nesting so a hostile tx can't make the
 // extractor recurse without limit. authz itself rejects deeper nesting.
 const maxAuthzDepth = 4
@@ -146,7 +154,11 @@ func msgAddresses(cdc codec.Codec, msg sdk.Msg, depth int) ([][]byte, error) {
 			// frozen EOA that any contract can then call to move its funds.
 			// An authorization whose signature does not recover is skipped
 			// by the EVM too, so it involves nobody.
-			for _, a := range ethTx.SetCodeAuthorizations() {
+			auths := ethTx.SetCodeAuthorizations()
+			if len(auths) > maxAuthorizations {
+				return nil, fmt.Errorf("%d EIP-7702 authorizations exceeds the %d the compliance check will recover", len(auths), maxAuthorizations)
+			}
+			for _, a := range auths {
 				if authority, err := a.Authority(); err == nil {
 					out = append(out, authority.Bytes())
 				}

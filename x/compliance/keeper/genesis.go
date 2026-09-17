@@ -57,6 +57,14 @@ func (k Keeper) InitGenesis(ctx context.Context, gs types.GenesisState) error {
 				}
 			}
 		}
+		for i := range p.Changes {
+			a, _ := types.ParseAddress(p.Changes[i].Address)
+			p.Changes[i].Address = types.Bech32(a)
+		}
+		for i := range p.Extended {
+			a, _ := types.ParseAddress(p.Extended[i].Address)
+			p.Extended[i].Address = types.Bech32(a)
+		}
 		if err := k.Pending.Set(ctx, p.Id, p); err != nil {
 			return err
 		}

@@ -2,8 +2,6 @@ package app
 
 import (
 	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -18,9 +16,11 @@ const pinnedEVM = "v0.7.3"
 // to break silently.
 func TestUpstreamCouplingPins(t *testing.T) {
 	// go.mod is read directly: debug.ReadBuildInfo's Deps are not populated
-	// in test binaries on every toolchain.
-	_, self, _, _ := runtime.Caller(0)
-	gomod, err := os.ReadFile(filepath.Join(filepath.Dir(self), "..", "go.mod"))
+	// in test binaries on every toolchain. go test runs with the package dir
+	// as cwd, which also holds under -trimpath (runtime.Caller would not).
+	// A replace of cosmos/evm is not considered: make verify-deps rejects
+	// one before the build (ENGINEERING.md §2.1).
+	gomod, err := os.ReadFile("../go.mod")
 	if err != nil {
 		t.Fatal(err)
 	}

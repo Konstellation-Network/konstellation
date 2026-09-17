@@ -181,16 +181,16 @@ func (k Keeper) startCooldown(ctx context.Context, addr []byte) error {
 // address, so ratification never leaves an unfrozen gap between the
 // emergency expiry and the scheduled execute_at. Returns the expiry it
 // replaced so the caller can record it; nil if nothing was extended.
-func (k Keeper) extendEmergencyTo(ctx context.Context, addr []byte, until time.Time) (*time.Time, error) {
+func (k Keeper) extendEmergencyTo(ctx context.Context, addr []byte, until time.Time) (*types.ExtendedFreeze, error) {
 	e, err := k.Block.Get(ctx, addr)
 	if err != nil || e.ExpiresAt == nil || !e.ExpiresAt.Before(until) {
 		return nil, nil
 	}
-	original := *e.ExpiresAt
+	rec := &types.ExtendedFreeze{Address: types.Bech32(addr), OriginalExpiresAt: *e.ExpiresAt, FrozenAt: e.AddedAt}
 	if err := k.setExpiry(ctx, addr, e, until, "extended to scheduled ratification"); err != nil {
 		return nil, err
 	}
-	return &original, nil
+	return rec, nil
 }
 
 // setExpiry moves a temporary block entry's expiry, keeping the index in
@@ -234,17 +234,21 @@ func (k Keeper) lapse(ctx context.Context, addr []byte, e types.ListEntry) error
 	return nil
 }
 
-// restoreExtension undoes what scheduling update `cancelled` did to addr's
-// emergency freeze. The freeze goes back to `original`, or further out if
-// another pending block-list add still ratifies it (that update inherits
-// the record so its own cancellation restores correctly). If the restored
-// expiry has already passed, the freeze lapses now with the usual cooldown.
-func (k Keeper) restoreExtension(ctx context.Context, addr []byte, original time.Time, cancelled types.PendingUpdate) error {
+// restoreExtension undoes what scheduling update `cancelled` did to the
+// emergency freeze rec describes. The freeze goes back to its original
+// expiry, or further out if another pending block-list add still ratifies
+// it (that update inherits the record so its own cancellation restores
+// correctly). If the restored expiry has already passed, the freeze lapses
+// now with the usual cooldown. A freeze that is not the one extended (the
+// original was removed by governance and the address frozen afresh) is
+// left alone.
+func (k Keeper) restoreExtension(ctx context.Context, rec types.ExtendedFreeze, cancelled types.PendingUpdate) error {
+	addr, _ := types.ParseAddress(rec.Address)
 	e, err := k.Block.Get(ctx, addr)
-	if err != nil || e.ExpiresAt == nil {
-		return nil // lifted, or ratified by a permanent entry meanwhile
+	if err != nil || e.ExpiresAt == nil || !e.AddedAt.Equal(rec.FrozenAt) {
+		return nil // lifted, ratified by a permanent entry, or a different freeze
 	}
-	target := original
+	target := rec.OriginalExpiresAt
 	var heir *types.PendingUpdate
 	if err := k.Pending.Walk(ctx, nil, func(_ uint64, q types.PendingUpdate) (bool, error) {
 		for _, c := range q.Changes {
@@ -265,19 +269,21 @@ func (k Keeper) restoreExtension(ctx context.Context, addr []byte, original time
 		return err
 	}
 	if heir != nil {
-		// The heir may itself hold a record, taken when it extended from
-		// *our* extension; the earliest original is the true one.
+		// The heir may itself hold a record for this freeze, taken when it
+		// extended from *our* extension; the earliest original is the true
+		// one.
 		found := false
 		for i, x := range heir.Extended {
-			if x.Address == types.Bech32(addr) {
-				found = true
-				if original.Before(x.OriginalExpiresAt) {
-					heir.Extended[i].OriginalExpiresAt = original
-				}
+			if a, _ := types.ParseAddress(x.Address); string(a) != string(addr) || !x.FrozenAt.Equal(rec.FrozenAt) {
+				continue
+			}
+			found = true
+			if rec.OriginalExpiresAt.Before(x.OriginalExpiresAt) {
+				heir.Extended[i].OriginalExpiresAt = rec.OriginalExpiresAt
 			}
 		}
 		if !found {
-			heir.Extended = append(heir.Extended, types.ExtendedFreeze{Address: types.Bech32(addr), OriginalExpiresAt: original})
+			heir.Extended = append(heir.Extended, rec)
 		}
 		if err := k.Pending.Set(ctx, heir.Id, *heir); err != nil {
 			return err
@@ -328,12 +334,12 @@ func (k Keeper) schedule(ctx context.Context, changes []types.Change, by string)
 	for _, c := range changes {
 		if c.List == types.LIST_BLOCK && c.Action == types.ACTION_ADD {
 			addr, _ := types.ParseAddress(c.Address)
-			original, err := k.extendEmergencyTo(ctx, addr, p.ExecuteAt)
+			rec, err := k.extendEmergencyTo(ctx, addr, p.ExecuteAt)
 			if err != nil {
 				return types.PendingUpdate{}, err
 			}
-			if original != nil {
-				p.Extended = append(p.Extended, types.ExtendedFreeze{Address: types.Bech32(addr), OriginalExpiresAt: *original})
+			if rec != nil {
+				p.Extended = append(p.Extended, *rec)
 			}
 		}
 	}
@@ -380,8 +386,7 @@ func (k Keeper) cancel(ctx context.Context, id uint64, by string) error {
 		return err
 	}
 	for _, x := range p.Extended {
-		addr, _ := types.ParseAddress(x.Address)
-		if err := k.restoreExtension(ctx, addr, x.OriginalExpiresAt, p); err != nil {
+		if err := k.restoreExtension(ctx, x, p); err != nil {
 			return err
 		}
 	}

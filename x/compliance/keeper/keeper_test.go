@@ -423,7 +423,6 @@ func TestEmergencyFreezeCannotBeChained(t *testing.T) {
 	}
 }
 
-// PR #10 review #3/#4: timelock must be positive; timestamps are whole seconds.
 func TestAuthorityCannotCancelGovScheduledUpdate(t *testing.T) {
 	f := setup(t)
 	res, err := f.ms.ScheduleUpdate(f.ctx, &types.MsgScheduleUpdate{Authority: gov, Changes: []types.Change{change(alice, types.LIST_BLOCK, types.ACTION_ADD)}})
@@ -532,6 +531,65 @@ func TestScheduleThenCancelCannotChainEmergencyFreeze(t *testing.T) {
 	}
 }
 
+func TestCancelDoesNotTouchADifferentFreeze(t *testing.T) {
+	// The extension record must identify the freeze it extended. If gov
+	// removes that freeze and the authority freezes the address afresh
+	// while the update is still pending, cancelling the stale update must
+	// leave the new freeze alone — not shorten it to the old original, and
+	// not lapse it with a cooldown.
+	f := setup(t)
+	freeze := &types.MsgEmergencyFreeze{Authority: authority, Addresses: []string{alice.Hex()}}
+	if _, err := f.ms.EmergencyFreeze(f.ctx, freeze); err != nil {
+		t.Fatal(err)
+	}
+	f.advance(time.Hour)
+	res, err := f.ms.ScheduleUpdate(f.ctx, &types.MsgScheduleUpdate{Authority: authority, Changes: []types.Change{change(alice, types.LIST_BLOCK, types.ACTION_ADD)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// gov removes the freeze outright (no cooldown), update stays pending
+	if _, err := f.ms.GovUpdate(f.ctx, &types.MsgGovUpdate{Authority: gov, Changes: []types.Change{change(alice, types.LIST_BLOCK, types.ACTION_REMOVE)}}); err != nil {
+		t.Fatal(err)
+	}
+	f.advance(20 * time.Hour)
+	if _, err := f.ms.EmergencyFreeze(f.ctx, freeze); err != nil {
+		t.Fatal(err)
+	}
+	fresh := *mustBlock(t, f, alice).ExpiresAt // now + 24h
+
+	// cancel before the stale original (t0+24h) has passed: no shortening
+	f.advance(2 * time.Hour)
+	if _, err := f.ms.CancelUpdate(f.ctx, &types.MsgCancelUpdate{Authority: authority, Id: res.Id}); err != nil {
+		t.Fatal(err)
+	}
+	if got := *mustBlock(t, f, alice).ExpiresAt; !got.Equal(fresh) {
+		t.Fatalf("cancelling a stale update changed a different freeze: %v, want %v", got, fresh)
+	}
+
+	// and the same after the stale original has passed: no lapse
+	g := setup(t)
+	if _, err := g.ms.EmergencyFreeze(g.ctx, freeze); err != nil {
+		t.Fatal(err)
+	}
+	g.advance(time.Hour)
+	res, _ = g.ms.ScheduleUpdate(g.ctx, &types.MsgScheduleUpdate{Authority: authority, Changes: []types.Change{change(alice, types.LIST_BLOCK, types.ACTION_ADD)}})
+	_, _ = g.ms.GovUpdate(g.ctx, &types.MsgGovUpdate{Authority: gov, Changes: []types.Change{change(alice, types.LIST_BLOCK, types.ACTION_REMOVE)}})
+	g.advance(20 * time.Hour)
+	if _, err := g.ms.EmergencyFreeze(g.ctx, freeze); err != nil {
+		t.Fatal(err)
+	}
+	g.advance(3*time.Hour + 30*time.Minute) // stale original (t0+24h) is 30 min in the past; update executes at t0+25h
+	if _, err := g.ms.CancelUpdate(g.ctx, &types.MsgCancelUpdate{Authority: authority, Id: res.Id}); err != nil {
+		t.Fatal(err)
+	}
+	if !g.k.IsFrozen(g.ctx, alice.Bytes()) {
+		t.Fatal("cancelling a stale update lapsed a different freeze")
+	}
+	if _, err := g.k.Cooldown.Get(g.ctx, alice.Bytes()); err == nil {
+		t.Fatal("a cooldown was started for a freeze that did not lapse")
+	}
+}
+
 func mustBlock(t *testing.T, f *fixture, addr common.Address) types.ListEntry {
 	t.Helper()
 	e, err := f.k.Block.Get(f.ctx, addr.Bytes())
@@ -541,6 +599,7 @@ func mustBlock(t *testing.T, f *fixture, addr common.Address) types.ListEntry {
 	return e
 }
 
+// PR #10 review #3/#4: timelock must be positive; timestamps are whole seconds.
 func TestTimelockBoundsAndSecondGranularity(t *testing.T) {
 	p := types.DefaultParams()
 	p.Timelock = 0

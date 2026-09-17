@@ -96,6 +96,10 @@ message PendingUpdate {
 message ExtendedFreeze {
   string address = 1 [(cosmos_proto.scalar) = "cosmos.AddressString"];
   google.protobuf.Timestamp original_expires_at = 2 [(gogoproto.stdtime) = true, (gogoproto.nullable) = false];
+  // frozen_at is the added_at of the freeze that was extended. A freeze
+  // removed by governance and re-applied while the update is pending is a
+  // different freeze; the record must not act on it.
+  google.protobuf.Timestamp frozen_at = 3 [(gogoproto.stdtime) = true, (gogoproto.nullable) = false];
 }
 
 // Cooldown records that an address may not be emergency-frozen again before

@@ -59,8 +59,8 @@ func (gs GenesisState) Validate() error {
 			if _, err := ParseAddress(x.Address); err != nil {
 				return fmt.Errorf("pending %d: extended %d: %w", i, j, err)
 			}
-			if x.OriginalExpiresAt.IsZero() {
-				return fmt.Errorf("pending %d: extended %d: zero original_expires_at", i, j)
+			if x.OriginalExpiresAt.IsZero() || x.FrozenAt.IsZero() {
+				return fmt.Errorf("pending %d: extended %d: zero timestamp", i, j)
 			}
 		}
 	}
