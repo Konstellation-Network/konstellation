@@ -93,15 +93,12 @@ func Check(ctx sdk.Context, cdc codec.Codec, k FreezeChecker, tx sdk.Tx) error {
 // membership.
 //
 // Safe on an unvalidated tx: the SDK tx wrapper's FeePayer/FeeGranter panic
-// on malformed AuthInfo, so the tx's own ValidateBasic runs first and any
-// residual panic is turned into an error rather than taking down the
-// CheckTx/InsertTx/RPC path that called us.
+// on malformed AuthInfo, so any panic is turned into an error rather than
+// taking down the CheckTx/InsertTx/RPC path that called us. Do not guard
+// this with the tx's own ValidateBasic: the SDK's requires Cosmos
+// signatures, which an EVM tx never has (its signature lives inside
+// MsgEthereumTx), so that would reject every EVM tx on the chain.
 func InvolvedAddresses(cdc codec.Codec, tx sdk.Tx) (out [][]byte, err error) {
-	if v, ok := tx.(interface{ ValidateBasic() error }); ok {
-		if err := v.ValidateBasic(); err != nil {
-			return nil, err
-		}
-	}
 	defer func() {
 		if r := recover(); r != nil {
 			out, err = nil, fmt.Errorf("extracting addresses: %v", r)

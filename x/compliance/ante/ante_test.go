@@ -201,6 +201,36 @@ func TestWrapOrder(t *testing.T) {
 
 // PR #10 review #1: the pre-check runs on an unvalidated tx, so malformed
 // input must produce an error, never a panic.
+// A real SDK-encoded tx (not fakeTx, which has no ValidateBasic) carrying an
+// EVM message and no Cosmos signatures must be accepted: that is what every
+// EVM transaction looks like. Regression for the PR #10 re-review finding
+// that Tx.ValidateBasic in the extractor rejected all EVM txs.
+func TestInvolvedAddresses_EVMTxWithoutCosmosSignatures(t *testing.T) {
+	cfg := moduletestutil.MakeTestEncodingConfig(auth.AppModuleBasic{}, bank.AppModuleBasic{}, authzmodule.AppModuleBasic{})
+	evmtypes.RegisterInterfaces(cfg.InterfaceRegistry)
+
+	ethTx := ethtypes.NewTx(&ethtypes.LegacyTx{Nonce: 0, To: &bob, Value: big.NewInt(1), Gas: 21000, GasPrice: big.NewInt(1)})
+	msg := &evmtypes.MsgEthereumTx{}
+	msg.FromEthereumTx(ethTx)
+	msg.From = alice.Bytes()
+
+	b := cfg.TxConfig.NewTxBuilder()
+	if err := b.SetMsgs(msg); err != nil {
+		t.Fatal(err)
+	}
+	tx := b.GetTx()
+	if v, ok := tx.(interface{ ValidateBasic() error }); !ok || v.ValidateBasic() == nil {
+		t.Fatal("fixture must be a real SDK tx that fails ValidateBasic for lack of Cosmos signatures")
+	}
+	got, err := ante.InvolvedAddresses(cfg.Codec, tx)
+	if err != nil {
+		t.Fatalf("EVM tx without Cosmos signatures rejected: %v", err)
+	}
+	if !has(got, alice) || !has(got, bob) {
+		t.Fatalf("want sender+to, got %x", got)
+	}
+}
+
 func TestInvolvedAddresses_MalformedDoesNotPanic(t *testing.T) {
 	cdc := testCodec(t)
 
