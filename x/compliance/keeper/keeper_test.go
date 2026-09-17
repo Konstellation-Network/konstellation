@@ -491,6 +491,43 @@ func TestProtectedAddressesCannotBeFrozen(t *testing.T) {
 	}
 }
 
+func TestGenesisRefusesProtectedFreeze(t *testing.T) {
+	// InitGenesis is a write path Validate() cannot guard: the protected set
+	// lives on the keeper. A frozen gov account at genesis is unrecoverable.
+	for _, victim := range []string{gov, feeCollector, authority} {
+		f := setup(t)
+		gs := types.DefaultGenesisState()
+		gs.Params.Authority = authority
+		gs.Entries = []types.ListEntry{{Address: victim, List: types.LIST_BLOCK, Reason: "oops"}}
+		if err := gs.Validate(); err != nil {
+			t.Fatalf("Validate is keeper-free and must accept %s: %v", victim, err)
+		}
+		if err := f.k.InitGenesis(f.ctx, *gs); !types.ErrProtectedAddress.Is(err) {
+			t.Errorf("genesis block entry for %s: want ErrProtectedAddress, got %v", victim, err)
+		}
+		if f.k.IsFrozen(f.ctx, sdk.MustAccAddressFromBech32(victim)) {
+			t.Errorf("%s frozen by genesis", victim)
+		}
+
+		// a pending block-add is rejected too, not left as dead weight
+		gs.Entries = nil
+		gs.Pending = []types.PendingUpdate{{Id: 1, ExecuteAt: t0.Add(time.Hour), ScheduledBy: authority,
+			Changes: []types.Change{{Address: victim, List: types.LIST_BLOCK, Action: types.ACTION_ADD}}}}
+		gs.NextPendingId = 2
+		if err := f.k.InitGenesis(f.ctx, *gs); !types.ErrProtectedAddress.Is(err) {
+			t.Errorf("genesis pending freeze of %s: want ErrProtectedAddress, got %v", victim, err)
+		}
+
+		// allow-listing at genesis stays permitted
+		gs.Pending = nil
+		gs.NextPendingId = 1
+		gs.Entries = []types.ListEntry{{Address: victim, List: types.LIST_ALLOW}}
+		if err := f.k.InitGenesis(f.ctx, *gs); err != nil {
+			t.Errorf("genesis allow entry for %s: %v", victim, err)
+		}
+	}
+}
+
 func TestUpdateParamsRefusesFrozenAuthority(t *testing.T) {
 	f := setup(t)
 	_, _ = f.ms.GovUpdate(f.ctx, &types.MsgGovUpdate{Authority: gov, Changes: []types.Change{change(bob, types.LIST_BLOCK, types.ACTION_ADD)}})

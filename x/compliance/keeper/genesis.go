@@ -5,12 +5,19 @@ import (
 	"fmt"
 
 	"cosmossdk.io/collections"
+	errorsmod "cosmossdk.io/errors"
 
 	"github.com/Konstellation-Network/konstellation/x/compliance/types"
 )
 
 // InitGenesis writes the genesis state. Entries and pending updates are
 // stored as given; indexes are rebuilt from them.
+//
+// The protected-address rule is enforced here as well as on the message
+// paths: Validate() cannot see the protected set (it lives on the keeper),
+// and a genesis block-list entry for the gov account would be unrecoverable
+// since lifting it needs gov to sign. Params are written first so that the
+// genesis authority is protected too.
 func (k Keeper) InitGenesis(ctx context.Context, gs types.GenesisState) error {
 	if err := gs.Validate(); err != nil {
 		return err
@@ -18,11 +25,16 @@ func (k Keeper) InitGenesis(ctx context.Context, gs types.GenesisState) error {
 	if err := k.Params.Set(ctx, gs.Params); err != nil {
 		return err
 	}
-	for _, e := range gs.Entries {
+	for i, e := range gs.Entries {
 		addr, _ := types.ParseAddress(e.Address)
 		m, err := k.listOf(e.List)
 		if err != nil {
 			return err
+		}
+		if e.List == types.LIST_BLOCK {
+			if err := k.checkFreezable(ctx, addr); err != nil {
+				return errorsmod.Wrapf(err, "entry %d", i)
+			}
 		}
 		e.Address = types.Bech32(addr)
 		if err := m.Set(ctx, addr, e); err != nil {
@@ -34,7 +46,17 @@ func (k Keeper) InitGenesis(ctx context.Context, gs types.GenesisState) error {
 			}
 		}
 	}
-	for _, p := range gs.Pending {
+	for i, p := range gs.Pending {
+		// execute would skip these anyway; reject them so genesis carries no
+		// dead weight
+		for _, c := range p.Changes {
+			if c.List == types.LIST_BLOCK && c.Action == types.ACTION_ADD {
+				addr, _ := types.ParseAddress(c.Address)
+				if err := k.checkFreezable(ctx, addr); err != nil {
+					return errorsmod.Wrapf(err, "pending %d", i)
+				}
+			}
+		}
 		if err := k.Pending.Set(ctx, p.Id, p); err != nil {
 			return err
 		}

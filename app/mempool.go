@@ -148,7 +148,9 @@ func (m *complianceMempool) Insert(ctx context.Context, tx sdk.Tx) error {
 }
 
 // withCompliancePreCheckInsert covers CometBFT's ABCI InsertTx (broadcast
-// through the CometBFT RPC with the app-side mempool).
+// through the CometBFT RPC with the app-side mempool). ResponseInsertTx has
+// only a code field, so unlike CheckTx below the rejection reason cannot be
+// returned to the submitter.
 func (app *KonstellationApp) withCompliancePreCheckInsert(inner sdk.InsertTxHandler) sdk.InsertTxHandler {
 	return func(req *abci.RequestInsertTx) (*abci.ResponseInsertTx, error) {
 		if tx, err := app.TxDecode(req.GetTx()); err == nil {
