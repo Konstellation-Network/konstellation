@@ -54,10 +54,16 @@ install: go.sum
 clean:
 	rm -rf $(BUILDDIR)/
 
-test: test-unit
+test: test-unit test-integration
 
 test-unit:
 	go test -mod=readonly -timeout 15m ./...
+
+# In-process app tests (tests/integration): the real app, genesis, ante chain
+# and EVM, driven with signed txs. Needs the `test` build tag because
+# cosmos/evm's EVM chain config is a once-per-process global otherwise.
+test-integration:
+	go test -mod=readonly -tags test -timeout 20m ./tests/integration/...
 
 lint:
 	golangci-lint run ./...

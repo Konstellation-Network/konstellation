@@ -18,10 +18,10 @@
 // frozen address call isFrozen() themselves. Freezing an EOA therefore
 // guarantees it can never sign again — neither a transaction nor a 7702
 // authorization — and can never be the direct recipient of a native
-// transfer; it does not guarantee no token ever reaches it. Nor does it
-// undo a 7702 delegation installed *before* the freeze: an internal call to
-// such an account still runs the delegated code, so a freeze on a
-// delegated EOA should be paired with a governance or EVM-level code reset.
+// transfer; it does not guarantee no token ever reaches it. A 7702
+// delegation installed *before* the freeze would let an internal call still
+// run code at the frozen address; the keeper clears it at freeze time
+// (keeper/delegation.go), and this check keeps a new one from landing.
 //
 // The check runs after cosmos/evm's ante handler so EVM senders are the
 // signature-verified ones, and it runs in CheckTx, the mempool recheck and

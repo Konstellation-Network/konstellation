@@ -513,6 +513,11 @@ func New(
 		),
 	)
 
+	// A block-list add clears any EIP-7702 delegation on the frozen account
+	// (x/compliance/keeper/delegation.go); the compliance keeper needs x/vm
+	// for that and is built first because the precompile needs it.
+	app.ComplianceKeeper.SetEVMKeeper(app.EVMKeeper)
+
 	// Virtual fee collection stays OFF with BlockSTM (ENGINEERING.md §2.5,
 	// §7.3): it is the v0.7.0-new per-tx fee path that ships as part of the
 	// parallel-execution bundle. Fees use the classic authante.DeductFees

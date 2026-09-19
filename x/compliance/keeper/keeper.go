@@ -35,6 +35,8 @@ type Keeper struct {
 	// makes the precompile lie to contracts) and the governance account.
 	// The current list authority is protected dynamically, see isProtected.
 	protected map[string]struct{}
+	// evm is set by SetEVMKeeper after the EVM keeper exists; see delegation.go.
+	evm *evmRef
 
 	Schema      collections.Schema
 	Params      collections.Item[types.Params]
@@ -71,6 +73,7 @@ func NewKeeper(cdc codec.BinaryCodec, storeService store.KVStoreService, govAuth
 		cdc:          cdc,
 		govAuthority: govAuthority,
 		protected:    prot,
+		evm:          &evmRef{},
 		Params:       collections.NewItem(sb, types.ParamsKey, "params", codec.CollValue[types.Params](cdc)),
 		Allow:        collections.NewMap(sb, types.AllowListKey, "allow", collections.BytesKey, codec.CollValue[types.ListEntry](cdc)),
 		Block:        collections.NewMap(sb, types.BlockListKey, "block", collections.BytesKey, codec.CollValue[types.ListEntry](cdc)),

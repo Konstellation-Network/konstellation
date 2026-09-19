@@ -59,8 +59,10 @@ func (f *fixture) advance(d time.Duration) {
 	}
 }
 
+const testReason = "test"
+
 func change(addr common.Address, list types.List, action types.Action) types.Change {
-	return types.Change{Address: addr.Hex(), List: list, Action: action, Reason: "test"}
+	return types.Change{Address: addr.Hex(), List: list, Action: action, Reason: testReason}
 }
 
 func TestScheduleTimelockThenExecute(t *testing.T) {
