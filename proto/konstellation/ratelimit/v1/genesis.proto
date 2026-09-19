@@ -1,0 +1,13 @@
+syntax = "proto3";
+package konstellation.ratelimit.v1;
+
+import "gogoproto/gogo.proto";
+import "konstellation/ratelimit/v1/ratelimit.proto";
+
+option go_package = "github.com/Konstellation-Network/konstellation/x/ratelimit/types";
+
+// GenesisState is the module's genesis.
+message GenesisState {
+  repeated RateLimit rate_limits = 1 [(gogoproto.nullable) = false];
+  repeated PendingPacket pending_packets = 2 [(gogoproto.nullable) = false];
+}

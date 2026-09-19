@@ -10,11 +10,13 @@ import (
 	"github.com/cosmos/evm/server"
 	evmtypes "github.com/cosmos/evm/x/vm/types"
 
+	errorsmod "cosmossdk.io/errors"
 	"cosmossdk.io/log/v2"
 
 	"github.com/cosmos/cosmos-sdk/baseapp"
 	servertypes "github.com/cosmos/cosmos-sdk/server/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	sdkerrors "github.com/cosmos/cosmos-sdk/types/errors"
 
 	complianceante "github.com/Konstellation-Network/konstellation/x/compliance/ante"
 )
@@ -88,9 +90,9 @@ func (app *KonstellationApp) configureEVMMempool(appOpts servertypes.AppOptions,
 	return nil
 }
 
-// Synchronous mempool pre-check: the D6 freeze check and the blocked-
-// recipient check (blocked_recipient.go), against the latest committed
-// state, at every submission entry point.
+// Synchronous mempool pre-check: the circuit breaker, the D6 freeze check
+// and the blocked-recipient check (blocked_recipient.go), against the latest
+// committed state, at every submission entry point.
 //
 // The authoritative checks are in the ante handler. The EVM mempool only
 // runs the ante in its asynchronous recheck after insertion, so without a
@@ -123,10 +125,27 @@ func (app *KonstellationApp) mempoolPreCheck(tx sdk.Tx) error {
 		app.Logger().Warn("mempool pre-check skipped: state not readable, ante handler will enforce", "err", err)
 		return nil
 	}
+	if err := app.checkCircuit(ctx, tx); err != nil {
+		return err
+	}
 	if err := complianceante.Check(ctx, app.appCodec, app.ComplianceKeeper, tx); err != nil {
 		return err
 	}
 	return app.checkBlockedRecipient(ctx, tx)
+}
+
+// checkCircuit is the circuit breaker's ante check, for the pre-check path.
+func (app *KonstellationApp) checkCircuit(ctx sdk.Context, tx sdk.Tx) error {
+	for _, msg := range tx.GetMsgs() {
+		allowed, err := app.CircuitKeeper.IsAllowed(ctx, sdk.MsgTypeURL(msg))
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return errorsmod.Wrapf(sdkerrors.ErrUnauthorized, "circuit breaker disables %s", sdk.MsgTypeURL(msg))
+		}
+	}
+	return nil
 }
 
 const (

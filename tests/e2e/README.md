@@ -24,6 +24,9 @@ x/compliance rules. This layer covers what only a real process shows:
   txs refused synchronously at `eth_sendRawTransaction` (the JSON-RPC →
   `Mempool.Insert` path `app/mempool.go` wraps, which ABCI-level tests cannot
   reach); the EIP-155 id `init` derives from the genesis chain-id.
+- `ibc_test.go` — two chains joined by Hermes (Phase 3, §13): governance adds a
+  rate limit, over-limit transfers are refused, at-limit ones land, a frozen
+  receiver is error-acked and refunded. ~4 min; pulls the Hermes image.
 - `module_account_test.go` — an EVM transfer to a module account is refused at
   `eth_sendRawTransaction` with the reason and nothing charged
   (`app/blocked_recipient.go`; ENGINEERING.md §4.1.1). Before that check the

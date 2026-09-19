@@ -11,8 +11,8 @@ toolchain go1.26.8
 
 require (
 	cosmossdk.io/math v1.5.3
-	github.com/cometbft/cometbft v0.38.19
 	github.com/cosmos/cosmos-sdk v0.53.4
+	github.com/cosmos/ibc-go/v10 v10.3.0
 	github.com/cosmos/interchaintest/v10 v10.0.1
 	github.com/ethereum/go-ethereum v1.16.2
 	github.com/stretchr/testify v1.12.1
@@ -75,6 +75,7 @@ require (
 	github.com/cockroachdb/pebble v1.1.5 // indirect
 	github.com/cockroachdb/redact v1.1.6 // indirect
 	github.com/cockroachdb/tokenbucket v0.0.0-20230807174530-cc333fc44b06 // indirect
+	github.com/cometbft/cometbft v0.38.19 // indirect
 	github.com/cometbft/cometbft-db v0.14.1 // indirect
 	github.com/consensys/gnark-crypto v0.18.0 // indirect
 	github.com/cosmos/btcutil v1.0.5 // indirect
@@ -85,7 +86,6 @@ require (
 	github.com/cosmos/gogogateway v1.2.0 // indirect
 	github.com/cosmos/gogoproto v1.7.0 // indirect
 	github.com/cosmos/iavl v1.2.4 // indirect
-	github.com/cosmos/ibc-go/v10 v10.3.0 // indirect
 	github.com/cosmos/ics23/go v0.11.0 // indirect
 	github.com/cosmos/interchain-security/v7 v7.0.0-20250408210344-06e0dc6bf6d6 // indirect
 	github.com/cosmos/ledger-cosmos-go v0.14.0 // indirect

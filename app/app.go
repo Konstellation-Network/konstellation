@@ -67,6 +67,10 @@ import (
 	"github.com/cosmos/cosmos-sdk/client/grpc/node"
 	"github.com/cosmos/cosmos-sdk/codec"
 	"github.com/cosmos/cosmos-sdk/codec/types"
+	"github.com/cosmos/cosmos-sdk/contrib/x/circuit"
+	circuitante "github.com/cosmos/cosmos-sdk/contrib/x/circuit/ante"
+	circuitkeeper "github.com/cosmos/cosmos-sdk/contrib/x/circuit/keeper"
+	circuittypes "github.com/cosmos/cosmos-sdk/contrib/x/circuit/types"
 	"github.com/cosmos/cosmos-sdk/runtime"
 	runtimeservices "github.com/cosmos/cosmos-sdk/runtime/services"
 	sdkserver "github.com/cosmos/cosmos-sdk/server"
@@ -131,9 +135,14 @@ import (
 	evmconfig "github.com/Konstellation-Network/konstellation/app/config"
 	"github.com/Konstellation-Network/konstellation/x/compliance"
 	complianceante "github.com/Konstellation-Network/konstellation/x/compliance/ante"
+	complianceibc "github.com/Konstellation-Network/konstellation/x/compliance/ibc"
 	compliancekeeper "github.com/Konstellation-Network/konstellation/x/compliance/keeper"
 	complianceprecompile "github.com/Konstellation-Network/konstellation/x/compliance/precompile"
 	compliancetypes "github.com/Konstellation-Network/konstellation/x/compliance/types"
+	"github.com/Konstellation-Network/konstellation/x/ratelimit"
+	ratelimitkeeper "github.com/Konstellation-Network/konstellation/x/ratelimit/keeper"
+	ratelimittypes "github.com/Konstellation-Network/konstellation/x/ratelimit/types"
+	ratelimitv2 "github.com/Konstellation-Network/konstellation/x/ratelimit/v2"
 )
 
 func init() {
@@ -177,6 +186,7 @@ type KonstellationApp struct {
 	EvidenceKeeper        evidencekeeper.Keeper
 	FeeGrantKeeper        feegrantkeeper.Keeper
 	ConsensusParamsKeeper consensusparamkeeper.Keeper
+	CircuitKeeper         circuitkeeper.Keeper
 
 	// IBC keepers
 	IBCKeeper      *ibckeeper.Keeper // IBC Keeper must be a pointer in the app, so we can SetRouter on it correctly
@@ -191,6 +201,7 @@ type KonstellationApp struct {
 
 	// Konstellation modules
 	ComplianceKeeper compliancekeeper.Keeper
+	RateLimitKeeper  ratelimitkeeper.Keeper
 
 	// the module manager
 	ModuleManager      *module.Manager
@@ -248,12 +259,13 @@ func New(
 		minttypes.StoreKey, distrtypes.StoreKey, slashingtypes.StoreKey,
 		govtypes.StoreKey, consensusparamtypes.StoreKey,
 		upgradetypes.StoreKey, feegrant.StoreKey, evidencetypes.StoreKey, authzkeeper.StoreKey,
+		circuittypes.StoreKey,
 		// ibc keys
 		ibcexported.StoreKey, ibctransfertypes.StoreKey,
 		// Cosmos EVM store keys
 		evmtypes.StoreKey, feemarkettypes.StoreKey, erc20types.StoreKey,
 		// Konstellation store keys
-		compliancetypes.StoreKey,
+		compliancetypes.StoreKey, ratelimittypes.StoreKey,
 	)
 	oKeys := storetypes.NewObjectStoreKeys(banktypes.ObjectStoreKey, evmtypes.ObjectKey)
 
@@ -452,6 +464,26 @@ func New(
 	// If evidence needs to be handled for the app, set routes in router here and seal
 	app.EvidenceKeeper = *evidenceKeeper
 
+	// Safety rail 1 (ENGINEERING.md §13): the circuit breaker. Governance is
+	// the authority; the operating multisig is granted its permission level
+	// in the network's genesis (`account_permissions`), not here. Checked on
+	// every message the router executes — nested authz included — via
+	// SetCircuitBreaker, which must be set before RegisterServices so hybrid
+	// handlers are decorated too; and at the ante/mempool stage so a disabled
+	// message type is refused at submission with the reason.
+	//
+	// The module is SDK contrib code (deprecated by Cosmos Labs in v0.54,
+	// unmaintained, outside their bug bounty; decided 2026-09-19 to use it
+	// anyway — it is ~1.3k stable lines and vendoring it is the fallback if
+	// a later SDK drops it). In the audit scope (§12).
+	app.CircuitKeeper = circuitkeeper.NewKeeper(
+		appCodec,
+		runtime.NewKVStoreService(keys[circuittypes.StoreKey]),
+		authAddr,
+		app.AccountKeeper.AddressCodec(),
+	)
+	app.SetCircuitBreaker(&app.CircuitKeeper)
+
 	// D6 compliance lists. Built before the EVM keeper so the precompile can
 	// read them.
 	app.ComplianceKeeper = compliancekeeper.NewKeeper(
@@ -535,19 +567,33 @@ func New(
 		app.TransferKeeper,
 	)
 
+	// Safety rail 2 (ENGINEERING.md §13.2): per-channel, per-denom quotas on
+	// IBC value flow. Governance-managed; the circuit breaker is the
+	// emergency stop.
+	app.RateLimitKeeper = ratelimitkeeper.NewKeeper(
+		appCodec,
+		runtime.NewKVStoreService(keys[ratelimittypes.StoreKey]),
+		authAddr,
+		app.BankKeeper,
+	)
+
 	/*
 		Create Transfer Stack
 
 		transfer stack contains (from bottom to top):
+			- IBC Rate Limit Middleware (x/ratelimit, §13.2)
+			- Compliance receive gate (x/compliance/ibc, §18: no IBC funding of a frozen address)
 			- IBC Callbacks Middleware (with EVM ContractKeeper)
 			- ERC-20 Middleware
 			- IBC Transfer
 
-		SendPacket, since it is originating from the application to core IBC:
-		 	transferKeeper.SendPacket ->  erc20.SendPacket -> callbacks.SendPacket -> channel.SendPacket
+		RecvPacket, from core IBC down to the app:
+			channel.RecvPacket -> ratelimit.OnRecvPacket -> compliance.OnRecvPacket -> callbacks.OnRecvPacket -> erc20.OnRecvPacket -> transfer.OnRecvPacket
 
-		RecvPacket, message that originates from core IBC and goes down to app, the flow is the other way
-			channel.RecvPacket -> callbacks.OnRecvPacket -> erc20.OnRecvPacket -> transfer.OnRecvPacket
+		SendPacket, from the app up to core IBC. Upstream evmd hands the
+		transfer keeper the channel keeper directly, so its callbacks
+		middleware is not on the send path; the rate limiter is, explicitly:
+			transferKeeper.SendPacket -> ratelimit.SendPacket -> channel.SendPacket
 	*/
 
 	// create IBC module from top to bottom of stack
@@ -565,10 +611,17 @@ func New(
 	callbacksMiddleware.SetICS4Wrapper(app.IBCKeeper.ChannelKeeper)
 	callbacksMiddleware.SetUnderlyingApplication(transferStack)
 	transferStack = callbacksMiddleware
+	transferStack = complianceibc.NewMiddleware(app.ComplianceKeeper, transferStack)
+	rateLimitMiddleware := ratelimit.NewIBCMiddleware(app.RateLimitKeeper, transferStack)
+	rateLimitMiddleware.SetICS4Wrapper(app.IBCKeeper.ChannelKeeper)
+	app.TransferKeeper.WithICS4Wrapper(rateLimitMiddleware)
+	transferStack = rateLimitMiddleware
 
 	var transferStackV2 ibcapi.IBCModule
 	transferStackV2 = transferv2.NewIBCModule(app.TransferKeeper)
 	transferStackV2 = erc20v2.NewIBCMiddleware(transferStackV2, app.Erc20Keeper)
+	transferStackV2 = complianceibc.NewMiddlewareV2(app.ComplianceKeeper, transferStackV2)
+	transferStackV2 = ratelimitv2.NewIBCMiddleware(app.RateLimitKeeper, transferStackV2)
 
 	// Create static IBC router, add transfer route, then set and seal it
 	ibcRouter := porttypes.NewRouter()
@@ -611,6 +664,7 @@ func New(
 		authzmodule.NewAppModule(appCodec, app.AuthzKeeper, app.AccountKeeper, app.BankKeeper, app.interfaceRegistry),
 		consensus.NewAppModule(appCodec, app.ConsensusParamsKeeper),
 		vesting.NewAppModule(app.AccountKeeper, app.BankKeeper),
+		circuit.NewAppModule(appCodec, app.CircuitKeeper),
 		// IBC modules
 		ibc.NewAppModule(app.IBCKeeper),
 		ibctm.NewAppModule(tmLightClientModule),
@@ -621,6 +675,7 @@ func New(
 		erc20.NewAppModule(app.Erc20Keeper, app.AccountKeeper),
 		// Konstellation modules
 		compliance.NewAppModule(app.ComplianceKeeper),
+		ratelimit.NewAppModule(app.RateLimitKeeper),
 	)
 
 	// BasicModuleManager defines the module BasicManager which is in charge of setting up basic,
@@ -670,6 +725,8 @@ func New(
 		consensusparamtypes.ModuleName,
 		vestingtypes.ModuleName,
 		compliancetypes.ModuleName,
+		circuittypes.ModuleName,
+		ratelimittypes.ModuleName, // resets elapsed windows before this block's packets are handled
 	)
 
 	// NOTE: the feemarket module should go last in order of end blockers that are actually doing something,
@@ -690,7 +747,7 @@ func New(
 		slashingtypes.ModuleName, minttypes.ModuleName,
 		genutiltypes.ModuleName, evidencetypes.ModuleName, authz.ModuleName,
 		feegrant.ModuleName, upgradetypes.ModuleName, consensusparamtypes.ModuleName,
-		vestingtypes.ModuleName,
+		vestingtypes.ModuleName, circuittypes.ModuleName, ratelimittypes.ModuleName,
 	)
 
 	// NOTE: The genutils module must occur after staking so that pools are
@@ -713,7 +770,7 @@ func New(
 		ibctransfertypes.ModuleName,
 		genutiltypes.ModuleName, evidencetypes.ModuleName, authz.ModuleName,
 		feegrant.ModuleName, upgradetypes.ModuleName, vestingtypes.ModuleName,
-		compliancetypes.ModuleName,
+		compliancetypes.ModuleName, circuittypes.ModuleName, ratelimittypes.ModuleName,
 	}
 	app.ModuleManager.SetOrderInitGenesis(genesisModuleOrder...)
 	app.ModuleManager.SetOrderExportGenesis(genesisModuleOrder...)
@@ -865,13 +922,23 @@ func (app *KonstellationApp) setAnteHandler(txConfig client.TxConfig, maxGasWant
 		panic(err)
 	}
 
-	// D6: after cosmos/evm's ante (so EVM senders are signature-verified),
-	// reject any tx that involves a frozen address (x/compliance/ante); then
-	// any EVM tx sending value straight to a module account or precompile,
-	// so the refusal is explained here rather than lost at stateDB commit
-	// (blocked_recipient.go). Both also run in the mempool pre-check.
-	app.SetAnteHandler(app.withBlockedRecipientCheck(
+	// Ante chain, outermost first:
+	//   1. circuit breaker (§13): a disabled message type is refused before
+	//      any signature work. The router re-checks at execution, which is
+	//      what covers messages nested in authz MsgExec.
+	//   2. cosmos/evm's ante.
+	//   3. D6: after cosmos/evm's ante (so EVM senders are signature-verified),
+	//      reject any tx that involves a frozen address (x/compliance/ante).
+	//   4. any EVM tx sending value straight to a module account or
+	//      precompile, so the refusal is explained here rather than lost at
+	//      stateDB commit (blocked_recipient.go).
+	// 1, 3 and 4 also run in the mempool pre-check (mempool.go).
+	inner := app.withBlockedRecipientCheck(
 		complianceante.Wrap(evmante.NewAnteHandler(options), app.appCodec, app.ComplianceKeeper),
+	)
+	app.SetAnteHandler(sdk.ChainAnteDecorators(
+		circuitante.NewCircuitBreakerDecorator(&app.CircuitKeeper),
+		anteHandlerDecorator{inner},
 	))
 }
 

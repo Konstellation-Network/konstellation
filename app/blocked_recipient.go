@@ -58,3 +58,11 @@ func (app *KonstellationApp) withBlockedRecipientCheck(inner sdk.AnteHandler) sd
 		return newCtx, app.checkBlockedRecipient(newCtx, tx)
 	}
 }
+
+// anteHandlerDecorator lets a complete sdk.AnteHandler terminate a
+// sdk.ChainAnteDecorators chain.
+type anteHandlerDecorator struct{ h sdk.AnteHandler }
+
+func (d anteHandlerDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simulate bool, _ sdk.AnteHandler) (sdk.Context, error) {
+	return d.h(ctx, tx, simulate)
+}

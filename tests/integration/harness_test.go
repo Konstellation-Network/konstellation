@@ -45,6 +45,7 @@ import (
 
 	"github.com/cosmos/cosmos-sdk/baseapp"
 	"github.com/cosmos/cosmos-sdk/client/flags"
+	circuittypes "github.com/cosmos/cosmos-sdk/contrib/x/circuit/types"
 	simutils "github.com/cosmos/cosmos-sdk/testutil/sims"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 
@@ -81,8 +82,9 @@ func init() {
 }
 
 // konsApp adapts KonstellationApp to cosmos/evm's TestApp: DefaultGenesis
-// takes no chain-id there, and the harness needs a compliance authority it
-// holds the key for (a real network sets one in genesis or by governance).
+// takes no chain-id there, and the harness needs a compliance authority and
+// a circuit-breaker admin it holds the keys for (a real network sets both
+// in genesis: the foundation multisig and the 3-of-5 operations multisig).
 type konsApp struct {
 	*app.KonstellationApp
 	authority string
@@ -97,6 +99,14 @@ func (a konsApp) DefaultGenesis() map[string]json.RawMessage {
 	gs.Params.Timelock = complianceTimelock
 	gs.Params.AllowlistAddTimelock = complianceTimelock
 	gen[compliancetypes.ModuleName] = a.AppCodec().MustMarshalJSON(gs)
+	// The same key is the circuit breaker's super admin, the way a network
+	// genesis grants the operations multisig (ENGINEERING.md §13.1).
+	cg := circuittypes.DefaultGenesisState()
+	cg.AccountPermissions = []*circuittypes.GenesisAccountPermissions{{
+		Address:     a.authority,
+		Permissions: &circuittypes.Permissions{Level: circuittypes.Permissions_LEVEL_SUPER_ADMIN},
+	}}
+	gen[circuittypes.ModuleName] = a.AppCodec().MustMarshalJSON(cg)
 	return gen
 }
 
@@ -201,6 +211,21 @@ func (h *harness) sendEVM(key testkeyring.Key, args evmtypes.EvmTxArgs) (abcityp
 func (h *harness) checkTxEVM(key testkeyring.Key, args evmtypes.EvmTxArgs) *abcitypes.ResponseCheckTx {
 	h.t.Helper()
 	signed, err := h.factory.GenerateSignedEthTx(key.Priv, args)
+	require.NoError(h.t, err)
+	bz, err := h.factory.EncodeTx(signed)
+	require.NoError(h.t, err)
+	res, err := h.nw.CheckTx(bz)
+	require.NoError(h.t, err)
+	return res
+}
+
+// checkTxCosmos runs a Cosmos tx through ABCI CheckTx only.
+func (h *harness) checkTxCosmos(key testkeyring.Key, msgs ...sdk.Msg) *abcitypes.ResponseCheckTx {
+	h.t.Helper()
+	gas := uint64(500_000)
+	signed, err := h.factory.BuildCosmosTx(key.Priv, basefactory.CosmosTxArgs{
+		Msgs: msgs, Gas: &gas, GasPrice: ptr(sdkmath.NewInt(1_000_000_000)),
+	})
 	require.NoError(h.t, err)
 	bz, err := h.factory.EncodeTx(signed)
 	require.NoError(h.t, err)
