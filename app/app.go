@@ -866,8 +866,13 @@ func (app *KonstellationApp) setAnteHandler(txConfig client.TxConfig, maxGasWant
 	}
 
 	// D6: after cosmos/evm's ante (so EVM senders are signature-verified),
-	// reject any tx that involves a frozen address. See x/compliance/ante.
-	app.SetAnteHandler(complianceante.Wrap(evmante.NewAnteHandler(options), app.appCodec, app.ComplianceKeeper))
+	// reject any tx that involves a frozen address (x/compliance/ante); then
+	// any EVM tx sending value straight to a module account or precompile,
+	// so the refusal is explained here rather than lost at stateDB commit
+	// (blocked_recipient.go). Both also run in the mempool pre-check.
+	app.SetAnteHandler(app.withBlockedRecipientCheck(
+		complianceante.Wrap(evmante.NewAnteHandler(options), app.appCodec, app.ComplianceKeeper),
+	))
 }
 
 func (app *KonstellationApp) onPendingTx(hash common.Hash) {

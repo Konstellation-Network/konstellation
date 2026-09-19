@@ -24,10 +24,11 @@ x/compliance rules. This layer covers what only a real process shows:
   txs refused synchronously at `eth_sendRawTransaction` (the JSON-RPC →
   `Mempool.Insert` path `app/mempool.go` wraps, which ABCI-level tests cannot
   reach); the EIP-155 id `init` derives from the genesis chain-id.
-- `module_account_test.go` — an EVM transfer to a module account fails in the
-  block (ENGINEERING.md §4.1.1), and what that looks like from the RPC: the
-  failed SDK tx is not indexed as an Ethereum tx, so `eth_getTransactionReceipt`
-  says "not found" and the reason is only in CometBFT's `tx_search`.
+- `module_account_test.go` — an EVM transfer to a module account is refused at
+  `eth_sendRawTransaction` with the reason and nothing charged
+  (`app/blocked_recipient.go`; ENGINEERING.md §4.1.1). Before that check the
+  same tx failed inside the block and vanished from `eth_*` — this test is what
+  showed it.
 
 Phase 5 drills (state-breaking upgrade, chaos, halt-and-restart) belong here
 too, once there is a release to upgrade from.
