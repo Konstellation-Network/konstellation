@@ -5,7 +5,11 @@
 #
 #   docker build -t konstellation:e2e .
 
-FROM golang:1.26.8-bookworm AS builder
+FROM golang:1.26-bookworm AS builder
+# The official image sets GOTOOLCHAIN=local. `auto` lets go.mod's `toolchain`
+# line win, so a Go bump there does not break this build while `make build`
+# keeps working (PR #11 review).
+ENV GOTOOLCHAIN=auto
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
