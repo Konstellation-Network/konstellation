@@ -1,0 +1,7 @@
+build/
+data/
+.testnets/
+*.log
+mnemonics.yaml
+tests/e2e/
+.github/
