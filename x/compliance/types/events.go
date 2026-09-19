@@ -13,6 +13,9 @@ const (
 	EventTypeEmergencyFreeze = "compliance_emergency_freeze"
 	EventTypeEmergencyLifted = "compliance_emergency_lifted"
 	EventTypeParamsUpdated   = "compliance_params_updated"
+	// EventTypeDelegationReset: a block-list add found an EIP-7702 delegation
+	// on the address and removed it (keeper/delegation.go).
+	EventTypeDelegationReset = "compliance_delegation_reset"
 
 	AttributeKeyID        = "id"
 	AttributeKeyAddress   = "address"
@@ -23,4 +26,5 @@ const (
 	AttributeKeyExpiresAt = "expires_at"
 	AttributeKeyBy        = "by"
 	AttributeKeyAuthority = "authority"
+	AttributeKeyDelegate  = "delegate"
 )

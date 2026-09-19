@@ -23,6 +23,22 @@ jobs:
         run: make build
       - name: Unit tests
         run: make test-unit
+      - name: Integration tests
+        run: make test-integration
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tests/e2e/go.mod
+          cache-dependency-path: tests/e2e/go.sum
+      - name: Build node image
+        run: make docker-build
+      - name: End-to-end (interchaintest)
+        run: make test-e2e
 
   lint:
     runs-on: ubuntu-latest
@@ -37,3 +53,9 @@ jobs:
         with:
           version: v2.13.1 # keep in step with .golangci.yml; bump deliberately
           args: --timeout 10m
+      - uses: golangci/golangci-lint-action@v8
+        name: Lint tests/e2e (separate module)
+        with:
+          version: v2.13.1
+          working-directory: tests/e2e
+          args: --timeout 10m --config ../../.golangci.yml

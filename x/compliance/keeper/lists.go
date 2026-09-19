@@ -55,6 +55,9 @@ func (k Keeper) applyChange(ctx context.Context, c types.Change, by string) erro
 		}); err != nil {
 			return err
 		}
+		if c.List == types.LIST_BLOCK {
+			k.resetDelegation(ctx, addr, by)
+		}
 		sdkCtx.EventManager().EmitEvent(sdk.NewEvent(types.EventTypeEntryAdded,
 			sdk.NewAttribute(types.AttributeKeyAddress, types.Bech32(addr)),
 			sdk.NewAttribute(types.AttributeKeyList, c.List.String()),
@@ -136,6 +139,7 @@ func (k Keeper) emergencyFreeze(ctx context.Context, addr []byte, reason, by str
 	if err := k.ExpiryIndex.Set(ctx, collections.Join(exp.Unix(), addr)); err != nil {
 		return err
 	}
+	k.resetDelegation(ctx, addr, by)
 	sdkCtx.EventManager().EmitEvent(sdk.NewEvent(types.EventTypeEmergencyFreeze,
 		sdk.NewAttribute(types.AttributeKeyAddress, types.Bech32(addr)),
 		sdk.NewAttribute(types.AttributeKeyExpiresAt, exp.UTC().Format(time.RFC3339)),

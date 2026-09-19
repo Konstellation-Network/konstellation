@@ -34,7 +34,7 @@ ifneq (,$(findstring nooptimization,$(COSMOS_BUILD_OPTIONS)))
   BUILD_FLAGS += -gcflags "all=-N -l"
 endif
 
-.PHONY: all build build-linux install clean test test-unit lint proto-gen proto-lint vulncheck vulncheck-binary verify-deps localnet
+.PHONY: all build build-linux install clean test test-unit test-integration test-e2e docker-build lint lint-e2e proto-gen proto-lint vulncheck vulncheck-binary verify-deps localnet
 
 all: build
 
@@ -54,13 +54,31 @@ install: go.sum
 clean:
 	rm -rf $(BUILDDIR)/
 
-test: test-unit
+test: test-unit test-integration
 
 test-unit:
 	go test -mod=readonly -timeout 15m ./...
 
+# In-process app tests (tests/integration): the real app, genesis, ante chain
+# and EVM, driven with signed txs. Needs the `test` build tag because
+# cosmos/evm's EVM chain config is a once-per-process global otherwise.
+test-integration:
+	go test -mod=readonly -tags test -timeout 20m ./tests/integration/...
+
+# Real nodes under interchaintest (tests/e2e, its own Go module): needs
+# Docker and the image from `make docker-build`. Not part of `make test`.
+test-e2e:
+	cd tests/e2e && go test -mod=readonly -timeout 30m -v ./...
+
+# The e2e/local-run image. Not the release artifact (ENGINEERING.md §2.6).
+docker-build:
+	docker build -t konstellation:e2e .
+
 lint:
 	golangci-lint run ./...
+
+lint-e2e:
+	cd tests/e2e && golangci-lint run --config ../../.golangci.yml ./...
 
 # Regenerates x/**/*.pb.go and *.pb.gw.go from proto/. Needs buf,
 # protoc-gen-gocosmos and protoc-gen-grpc-gateway on PATH.
