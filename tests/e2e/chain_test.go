@@ -64,21 +64,24 @@ type konsChain struct {
 	eth       *ethclient.Client
 }
 
-// startChain boots one validator from the image and returns it running.
-func startChain(t *testing.T) *konsChain {
-	t.Helper()
-	if testing.Short() {
-		t.Skip("e2e needs Docker; skipped in -short")
-	}
-	ctx := context.Background()
+// chainSpec is one konstellation chain's interchaintest spec plus the
+// compliance authority its PreGenesis hook created (known only once the
+// validator container exists).
+type chainSpec struct {
+	spec      *interchaintest.ChainSpec
+	authority *string
+}
+
+// newChainSpec describes a one-validator chain from the image. extra genesis
+// keys are applied after the compliance ones.
+func newChainSpec(ctx context.Context, name, cosmosChainID string, extra ...cosmos.GenesisKV) chainSpec {
 	one, zero := 1, 0
 	decimals := int64(18)
-
-	var authority string
+	authority := new(string)
 	cfg := ibc.ChainConfig{
 		Type:             "cosmos",
-		Name:             chainName,
-		ChainID:          chainID,
+		Name:             name,
+		ChainID:          cosmosChainID,
 		Images:           []ibc.DockerImage{{Repository: imageRepo, Version: imageTag, UIDGID: "1025:1025"}},
 		Bin:              "konstellationd",
 		Bech32Prefix:     bech32Prefix,
@@ -108,23 +111,37 @@ func startChain(t *testing.T) *konsChain {
 			if err != nil {
 				return err
 			}
-			authority = addr
+			*authority = addr
 			return val.AddGenesisAccount(ctx, addr, []sdk.Coin{sdk.NewCoin(denom, sdkmath.NewInt(1_000_000).Mul(sdkmath.NewIntFromBigInt(oneKASH)))})
 		},
 		ModifyGenesis: func(cfg ibc.ChainConfig, genbz []byte) ([]byte, error) {
-			return cosmos.ModifyGenesis([]cosmos.GenesisKV{
-				cosmos.NewGenesisKV("app_state.compliance.params.authority", authority),
+			kvs := []cosmos.GenesisKV{
+				cosmos.NewGenesisKV("app_state.compliance.params.authority", *authority),
 				// Short so an emergency freeze lapses inside a test if one
 				// needs it to; x/compliance's MinTimelock is a minute.
 				cosmos.NewGenesisKV("app_state.compliance.params.timelock", "120s"),
-			})(cfg, genbz)
+			}
+			return cosmos.ModifyGenesis(append(kvs, extra...))(cfg, genbz)
 		},
 	}
+	return chainSpec{
+		spec: &interchaintest.ChainSpec{
+			Name: chainName, ChainName: name, Version: imageTag,
+			NumValidators: &one, NumFullNodes: &zero, ChainConfig: cfg,
+		},
+		authority: authority,
+	}
+}
 
-	cf := interchaintest.NewBuiltinChainFactory(zaptest.NewLogger(t), []*interchaintest.ChainSpec{{
-		Name: chainName, ChainName: chainName, Version: imageTag,
-		NumValidators: &one, NumFullNodes: &zero, ChainConfig: cfg,
-	}})
+// startChain boots one validator from the image and returns it running.
+func startChain(t *testing.T) *konsChain {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("e2e needs Docker; skipped in -short")
+	}
+	ctx := context.Background()
+	cs := newChainSpec(ctx, chainName, chainID)
+	cf := interchaintest.NewBuiltinChainFactory(zaptest.NewLogger(t), []*interchaintest.ChainSpec{cs.spec})
 	chains, err := cf.Chains(t.Name())
 	require.NoError(t, err)
 	chain := chains[0].(*cosmos.CosmosChain)
@@ -135,7 +152,12 @@ func startChain(t *testing.T) *konsChain {
 		TestName: t.Name(), Client: client, NetworkID: network, SkipPathCreation: true,
 	}))
 	t.Cleanup(func() { _ = ic.Close() })
+	return wrapChain(ctx, t, chain, *cs.authority)
+}
 
+// wrapChain attaches the helpers to a running chain.
+func wrapChain(ctx context.Context, t *testing.T, chain *cosmos.CosmosChain, authority string) *konsChain {
+	t.Helper()
 	k := &konsChain{t: t, ctx: ctx, chain: chain, authority: authority}
 	k.dialEVM()
 	return k

@@ -1,0 +1,49 @@
+syntax = "proto3";
+package konstellation.ratelimit.v1;
+
+import "gogoproto/gogo.proto";
+import "google/api/annotations.proto";
+import "konstellation/ratelimit/v1/ratelimit.proto";
+
+option go_package = "github.com/Konstellation-Network/konstellation/x/ratelimit/types";
+
+// Query is the rate-limit query service.
+service Query {
+  // RateLimits lists every rate limit.
+  rpc RateLimits(QueryRateLimitsRequest) returns (QueryRateLimitsResponse) {
+    option (google.api.http).get = "/konstellation/ratelimit/v1/rate_limits";
+  }
+  // RateLimit returns one path's limit and flow.
+  rpc RateLimit(QueryRateLimitRequest) returns (QueryRateLimitResponse) {
+    // denom is the trailing multi-segment parameter so ibc/<hash> vouchers
+    // match (grpc-gateway splits a single-segment {denom} on the slash).
+    option (google.api.http).get = "/konstellation/ratelimit/v1/rate_limit/{channel_id}/{denom=**}";
+  }
+  // RateLimitsByChannel lists the limits on one channel.
+  rpc RateLimitsByChannel(QueryRateLimitsByChannelRequest) returns (QueryRateLimitsByChannelResponse) {
+    option (google.api.http).get = "/konstellation/ratelimit/v1/rate_limits/{channel_id}";
+  }
+}
+
+message QueryRateLimitsRequest {}
+
+message QueryRateLimitsResponse {
+  repeated RateLimit rate_limits = 1 [(gogoproto.nullable) = false];
+}
+
+message QueryRateLimitRequest {
+  string denom = 1;
+  string channel_id = 2;
+}
+
+message QueryRateLimitResponse {
+  RateLimit rate_limit = 1;
+}
+
+message QueryRateLimitsByChannelRequest {
+  string channel_id = 1;
+}
+
+message QueryRateLimitsByChannelResponse {
+  repeated RateLimit rate_limits = 1 [(gogoproto.nullable) = false];
+}

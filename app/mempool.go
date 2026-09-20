@@ -88,9 +88,9 @@ func (app *KonstellationApp) configureEVMMempool(appOpts servertypes.AppOptions,
 	return nil
 }
 
-// Synchronous mempool pre-check: the D6 freeze check and the blocked-
-// recipient check (blocked_recipient.go), against the latest committed
-// state, at every submission entry point.
+// Synchronous mempool pre-check: the circuit breaker, the D6 freeze check
+// and the blocked-recipient check (blocked_recipient.go), against the latest
+// committed state, at every submission entry point.
 //
 // The authoritative checks are in the ante handler. The EVM mempool only
 // runs the ante in its asynchronous recheck after insertion, so without a
@@ -122,6 +122,9 @@ func (app *KonstellationApp) mempoolPreCheck(tx sdk.Tx) error {
 	if err != nil {
 		app.Logger().Warn("mempool pre-check skipped: state not readable, ante handler will enforce", "err", err)
 		return nil
+	}
+	if err := app.checkCircuit(ctx, tx); err != nil {
+		return err
 	}
 	if err := complianceante.Check(ctx, app.appCodec, app.ComplianceKeeper, tx); err != nil {
 		return err

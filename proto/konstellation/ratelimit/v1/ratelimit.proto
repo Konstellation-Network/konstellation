@@ -1,0 +1,76 @@
+syntax = "proto3";
+package konstellation.ratelimit.v1;
+
+import "gogoproto/gogo.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/Konstellation-Network/konstellation/x/ratelimit/types";
+
+// Path identifies what a rate limit applies to: one denom over one channel
+// (IBC v1) or client (IBC v2).
+message Path {
+  // denom as it exists on this chain: the base denom for native tokens,
+  // the ibc/<hash> voucher denom for tokens that came in over IBC.
+  string denom = 1;
+  // channel_id is the local channel (v1) or client (v2) id.
+  string channel_id = 2;
+}
+
+// Quota is the limit. Thresholds are a percentage of the denom's total
+// supply on this chain, snapshotted when the window starts (Flow.channel_value),
+// optionally capped by an absolute amount. For a voucher denom the supply
+// *is* what has been bridged in, so a percentage is meaningful on its own;
+// for the native denom the supply is everything that exists, so "1 %" is
+// 1 % of the whole chain — set the absolute cap for native paths.
+message Quota {
+  // max_percent_send caps net outflow over the window. Net, so 0 does not
+  // block sends outright: sends are allowed up to what the window has
+  // received. To stop a path entirely, trip MsgTransfer in x/circuit.
+  string max_percent_send = 1 [(gogoproto.customtype) = "cosmossdk.io/math.Int", (gogoproto.nullable) = false];
+  // max_percent_recv caps net inflow over the window. Net, as above: 0
+  // allows receives up to what the window has sent.
+  string max_percent_recv = 2 [(gogoproto.customtype) = "cosmossdk.io/math.Int", (gogoproto.nullable) = false];
+  // duration_hours is the window length.
+  uint64 duration_hours = 3;
+  // max_absolute_send, if positive, caps net outflow over the window in
+  // base units regardless of supply; the effective threshold is the lower
+  // of it and the percentage. 0 (or unset) means no absolute cap.
+  string max_absolute_send = 4 [(gogoproto.customtype) = "cosmossdk.io/math.Int", (gogoproto.nullable) = false];
+  // max_absolute_recv is the same for net inflow. It is also how a limit is
+  // set on a foreign token's path *before* the first packet arrives: the
+  // ibc/<hash> voucher has no supply yet, so a percentage of it is nothing;
+  // with a positive percentage and a positive absolute cap, the cap stands
+  // alone until supply exists.
+  string max_absolute_recv = 5 [(gogoproto.customtype) = "cosmossdk.io/math.Int", (gogoproto.nullable) = false];
+}
+
+// Flow is the running total for the current window.
+message Flow {
+  // inflow received over this path in the current window.
+  string inflow = 1 [(gogoproto.customtype) = "cosmossdk.io/math.Int", (gogoproto.nullable) = false];
+  // outflow sent over this path in the current window.
+  string outflow = 2 [(gogoproto.customtype) = "cosmossdk.io/math.Int", (gogoproto.nullable) = false];
+  // channel_value is the denom's total supply when the window started; the
+  // denominator for the percentage thresholds. Fixed for the window.
+  string channel_value = 3 [(gogoproto.customtype) = "cosmossdk.io/math.Int", (gogoproto.nullable) = false];
+  // window_start is the block time the current window began. The window
+  // resets in BeginBlock once block time reaches window_start + duration.
+  google.protobuf.Timestamp window_start = 4 [(gogoproto.stdtime) = true, (gogoproto.nullable) = false];
+}
+
+// RateLimit is one path's quota and current flow.
+message RateLimit {
+  Path path = 1 [(gogoproto.nullable) = false];
+  Quota quota = 2 [(gogoproto.nullable) = false];
+  Flow flow = 3 [(gogoproto.nullable) = false];
+}
+
+// PendingPacket is a send counted against the current window that has not
+// been acknowledged yet. An error ack or a timeout in the same window puts
+// the amount back; the window reset drops these so a late failure cannot
+// credit a later window.
+message PendingPacket {
+  string channel_id = 1;
+  string denom = 2;
+  uint64 sequence = 3;
+}
