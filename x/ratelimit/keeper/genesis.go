@@ -14,6 +14,7 @@ func (k Keeper) InitGenesis(ctx context.Context, gs types.GenesisState) error {
 		return err
 	}
 	for _, rl := range gs.RateLimits {
+		rl.Quota = rl.Quota.Normalized()
 		if err := k.SetRateLimit(ctx, rl); err != nil {
 			return err
 		}

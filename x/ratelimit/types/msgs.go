@@ -32,7 +32,10 @@ func validatePathAndQuota(denom, channel string, q Quota) error {
 
 // Quota is the quota the message asks for.
 func (m *MsgAddRateLimit) Quota() Quota {
-	return Quota{MaxPercentSend: m.MaxPercentSend, MaxPercentRecv: m.MaxPercentRecv, DurationHours: m.DurationHours}
+	return Quota{
+		MaxPercentSend: m.MaxPercentSend, MaxPercentRecv: m.MaxPercentRecv, DurationHours: m.DurationHours,
+		MaxAbsoluteSend: m.MaxAbsoluteSend, MaxAbsoluteRecv: m.MaxAbsoluteRecv,
+	}.Normalized()
 }
 
 // ValidateBasic checks the message.
@@ -45,7 +48,10 @@ func (m *MsgAddRateLimit) ValidateBasic() error {
 
 // Quota is the quota the message asks for.
 func (m *MsgUpdateRateLimit) Quota() Quota {
-	return Quota{MaxPercentSend: m.MaxPercentSend, MaxPercentRecv: m.MaxPercentRecv, DurationHours: m.DurationHours}
+	return Quota{
+		MaxPercentSend: m.MaxPercentSend, MaxPercentRecv: m.MaxPercentRecv, DurationHours: m.DurationHours,
+		MaxAbsoluteSend: m.MaxAbsoluteSend, MaxAbsoluteRecv: m.MaxAbsoluteRecv,
+	}.Normalized()
 }
 
 // ValidateBasic checks the message.

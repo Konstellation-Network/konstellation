@@ -172,6 +172,53 @@ func TestZeroQuotaBlocksDirection(t *testing.T) {
 	require.NoError(t, f.recv(million.Int64()))
 }
 
+// An absolute cap binds when it is below the percentage. Matters for the
+// native denom, whose supply is the whole chain, so a percentage alone is
+// a weak ceiling.
+func TestAbsoluteCap(t *testing.T) {
+	f := setup(t)
+	_, err := f.ms.AddRateLimit(f.ctx, &types.MsgAddRateLimit{
+		Authority: gov, Denom: denom, ChannelId: channel,
+		MaxPercentSend: sdkmath.NewInt(10), MaxPercentRecv: sdkmath.NewInt(10), DurationHours: 24, // 100 000 by percentage
+		MaxAbsoluteSend: sdkmath.NewInt(25_000), // the lower one wins
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, f.send(25_000, 1))
+	err = f.send(1, 2)
+	require.ErrorIs(t, err, types.ErrQuotaExceeded)
+	require.Contains(t, err.Error(), "exceed 25000 (10% of 1000000, absolute cap 25000)")
+	// Recv side has no absolute cap: the percentage applies unchanged.
+	require.NoError(t, f.recv(125_000)) // net inflow 100 000
+	require.ErrorIs(t, f.recv(1), types.ErrQuotaExceeded)
+
+	// A cap above the percentage does not loosen it.
+	_, err = f.ms.UpdateRateLimit(f.ctx, &types.MsgUpdateRateLimit{
+		Authority: gov, Denom: denom, ChannelId: channel,
+		MaxPercentSend: sdkmath.NewInt(10), MaxPercentRecv: sdkmath.NewInt(10), DurationHours: 24,
+		MaxAbsoluteSend: sdkmath.NewInt(5_000_000),
+	})
+	require.NoError(t, err)
+	require.NoError(t, f.send(100_000, 3))
+	require.ErrorIs(t, f.send(1, 4), types.ErrQuotaExceeded)
+
+	// Unset (a proposal's JSON omitting the fields) is "no cap" and is
+	// stored as zero, not nil.
+	rl, ok, err := f.k.GetRateLimit(f.ctx, denom, channel)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.False(t, rl.Quota.MaxAbsoluteRecv.IsNil())
+	require.True(t, rl.Quota.MaxAbsoluteRecv.IsZero())
+
+	// Negative is refused.
+	_, err = f.ms.UpdateRateLimit(f.ctx, &types.MsgUpdateRateLimit{
+		Authority: gov, Denom: denom, ChannelId: channel,
+		MaxPercentSend: sdkmath.NewInt(10), MaxPercentRecv: sdkmath.NewInt(10), DurationHours: 24,
+		MaxAbsoluteRecv: sdkmath.NewInt(-1),
+	})
+	require.ErrorIs(t, err, types.ErrInvalidQuota)
+}
+
 func TestUndoSendOnlyWithinWindow(t *testing.T) {
 	f := setup(t)
 	f.add(10, 10, 1)
@@ -313,10 +360,13 @@ func TestQueriesAndGenesisRoundTrip(t *testing.T) {
 	require.NoError(t, gs.Validate())
 
 	g := setup(t)
-	require.NoError(t, g.k.InitGenesis(g.ctx, *gs))
+	in := *gs
+	in.RateLimits = append([]types.RateLimit(nil), gs.RateLimits...)
+	in.RateLimits[0].Quota.MaxAbsoluteSend = sdkmath.Int{} // omitted in a hand-written genesis
+	require.NoError(t, g.k.InitGenesis(g.ctx, in))
 	gs2, err := g.k.ExportGenesis(g.ctx)
 	require.NoError(t, err)
-	require.Equal(t, gs, gs2)
+	require.Equal(t, gs, gs2, "unset absolute caps normalise to zero")
 
 	// Validate catches duplicates and bad quotas.
 	bad := *gs

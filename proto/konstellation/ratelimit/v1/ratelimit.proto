@@ -17,7 +17,11 @@ message Path {
 }
 
 // Quota is the limit. Thresholds are a percentage of the denom's total
-// supply on this chain, snapshotted when the window starts (Flow.channel_value).
+// supply on this chain, snapshotted when the window starts (Flow.channel_value),
+// optionally capped by an absolute amount. For a voucher denom the supply
+// *is* what has been bridged in, so a percentage is meaningful on its own;
+// for the native denom the supply is everything that exists, so "1 %" is
+// 1 % of the whole chain — set the absolute cap for native paths.
 message Quota {
   // max_percent_send caps net outflow over the window. Net, so 0 does not
   // block sends outright: sends are allowed up to what the window has
@@ -28,6 +32,12 @@ message Quota {
   string max_percent_recv = 2 [(gogoproto.customtype) = "cosmossdk.io/math.Int", (gogoproto.nullable) = false];
   // duration_hours is the window length.
   uint64 duration_hours = 3;
+  // max_absolute_send, if positive, caps net outflow over the window in
+  // base units regardless of supply; the effective threshold is the lower
+  // of it and the percentage. 0 (or unset) means no absolute cap.
+  string max_absolute_send = 4 [(gogoproto.customtype) = "cosmossdk.io/math.Int", (gogoproto.nullable) = false];
+  // max_absolute_recv is the same for net inflow.
+  string max_absolute_recv = 5 [(gogoproto.customtype) = "cosmossdk.io/math.Int", (gogoproto.nullable) = false];
 }
 
 // Flow is the running total for the current window.

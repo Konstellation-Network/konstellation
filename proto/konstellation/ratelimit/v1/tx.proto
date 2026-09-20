@@ -35,6 +35,9 @@ message MsgAddRateLimit {
   string max_percent_send = 4 [(gogoproto.customtype) = "cosmossdk.io/math.Int", (gogoproto.nullable) = false];
   string max_percent_recv = 5 [(gogoproto.customtype) = "cosmossdk.io/math.Int", (gogoproto.nullable) = false];
   uint64 duration_hours = 6;
+  // Optional absolute caps in base units; 0 or unset means none (Quota).
+  string max_absolute_send = 7 [(gogoproto.customtype) = "cosmossdk.io/math.Int", (gogoproto.nullable) = false];
+  string max_absolute_recv = 8 [(gogoproto.customtype) = "cosmossdk.io/math.Int", (gogoproto.nullable) = false];
 }
 
 message MsgAddRateLimitResponse {}
@@ -49,6 +52,9 @@ message MsgUpdateRateLimit {
   string max_percent_send = 4 [(gogoproto.customtype) = "cosmossdk.io/math.Int", (gogoproto.nullable) = false];
   string max_percent_recv = 5 [(gogoproto.customtype) = "cosmossdk.io/math.Int", (gogoproto.nullable) = false];
   uint64 duration_hours = 6;
+  // Optional absolute caps in base units; 0 or unset means none (Quota).
+  string max_absolute_send = 7 [(gogoproto.customtype) = "cosmossdk.io/math.Int", (gogoproto.nullable) = false];
+  string max_absolute_recv = 8 [(gogoproto.customtype) = "cosmossdk.io/math.Int", (gogoproto.nullable) = false];
 }
 
 message MsgUpdateRateLimitResponse {}

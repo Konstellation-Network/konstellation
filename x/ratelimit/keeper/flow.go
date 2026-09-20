@@ -181,8 +181,8 @@ func (k Keeper) CheckAndRecord(ctx context.Context, direction types.PacketDirect
 			sdk.NewAttribute(types.AttributeKeyOutflow, rl.Flow.Outflow.String()),
 		))
 		return true, errorsmod.Wrapf(types.ErrQuotaExceeded,
-			"%s %s of %s on %s: net %s flow would exceed %s (%s%% of %s) in this window",
-			direction, amount, denom, channelID, direction, threshold, percentFor(rl.Quota, direction), rl.Flow.ChannelValue)
+			"%s %s of %s on %s: net %s flow would exceed %s (%s%% of %s, absolute cap %s) in this window",
+			direction, amount, denom, channelID, direction, threshold, percentFor(rl.Quota, direction), rl.Flow.ChannelValue, absoluteFor(rl.Quota, direction))
 	}
 	if direction == types.PacketSend {
 		rl.Flow.Outflow = rl.Flow.Outflow.Add(amount)
@@ -197,6 +197,13 @@ func percentFor(q types.Quota, d types.PacketDirection) sdkmath.Int {
 		return q.MaxPercentSend
 	}
 	return q.MaxPercentRecv
+}
+
+func absoluteFor(q types.Quota, d types.PacketDirection) sdkmath.Int {
+	if d == types.PacketSend {
+		return q.MaxAbsoluteSend
+	}
+	return q.MaxAbsoluteRecv
 }
 
 // UndoSend puts a counted send back after an error ack or a timeout — but
@@ -258,6 +265,8 @@ func emitLimitEvent(ctx context.Context, typ string, path types.Path, q types.Qu
 		sdk.NewAttribute(types.AttributeKeyChannel, path.ChannelId),
 		sdk.NewAttribute("max_percent_send", q.MaxPercentSend.String()),
 		sdk.NewAttribute("max_percent_recv", q.MaxPercentRecv.String()),
+		sdk.NewAttribute("max_absolute_send", q.MaxAbsoluteSend.String()),
+		sdk.NewAttribute("max_absolute_recv", q.MaxAbsoluteRecv.String()),
 		sdk.NewAttribute("duration_hours", fmt.Sprint(q.DurationHours)),
 		sdk.NewAttribute(types.AttributeKeyBy, by),
 	))
