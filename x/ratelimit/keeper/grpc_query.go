@@ -28,7 +28,10 @@ func (q queryServer) RateLimit(ctx context.Context, req *types.QueryRateLimitReq
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "empty request")
 	}
-	rl, found := q.k.GetRateLimit(ctx, req.Denom, req.ChannelId)
+	rl, found, err := q.k.GetRateLimit(ctx, req.Denom, req.ChannelId)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
 	if !found {
 		return nil, status.Errorf(codes.NotFound, "no rate limit for %s on %s", req.Denom, req.ChannelId)
 	}

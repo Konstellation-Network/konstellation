@@ -88,9 +88,12 @@ func (m *Path) GetChannelId() string {
 // Quota is the limit. Thresholds are a percentage of the denom's total
 // supply on this chain, snapshotted when the window starts (Flow.channel_value).
 type Quota struct {
-	// max_percent_send caps net outflow over the window. 0 blocks all sends.
+	// max_percent_send caps net outflow over the window. Net, so 0 does not
+	// block sends outright: sends are allowed up to what the window has
+	// received. To stop a path entirely, trip MsgTransfer in x/circuit.
 	MaxPercentSend cosmossdk_io_math.Int `protobuf:"bytes,1,opt,name=max_percent_send,json=maxPercentSend,proto3,customtype=cosmossdk.io/math.Int" json:"max_percent_send"`
-	// max_percent_recv caps net inflow over the window. 0 blocks all receives.
+	// max_percent_recv caps net inflow over the window. Net, as above: 0
+	// allows receives up to what the window has sent.
 	MaxPercentRecv cosmossdk_io_math.Int `protobuf:"bytes,2,opt,name=max_percent_recv,json=maxPercentRecv,proto3,customtype=cosmossdk.io/math.Int" json:"max_percent_recv"`
 	// duration_hours is the window length.
 	DurationHours uint64 `protobuf:"varint,3,opt,name=duration_hours,json=durationHours,proto3" json:"duration_hours,omitempty"`

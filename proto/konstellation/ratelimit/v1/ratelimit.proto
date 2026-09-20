@@ -19,9 +19,12 @@ message Path {
 // Quota is the limit. Thresholds are a percentage of the denom's total
 // supply on this chain, snapshotted when the window starts (Flow.channel_value).
 message Quota {
-  // max_percent_send caps net outflow over the window. 0 blocks all sends.
+  // max_percent_send caps net outflow over the window. Net, so 0 does not
+  // block sends outright: sends are allowed up to what the window has
+  // received. To stop a path entirely, trip MsgTransfer in x/circuit.
   string max_percent_send = 1 [(gogoproto.customtype) = "cosmossdk.io/math.Int", (gogoproto.nullable) = false];
-  // max_percent_recv caps net inflow over the window. 0 blocks all receives.
+  // max_percent_recv caps net inflow over the window. Net, as above: 0
+  // allows receives up to what the window has sent.
   string max_percent_recv = 2 [(gogoproto.customtype) = "cosmossdk.io/math.Int", (gogoproto.nullable) = false];
   // duration_hours is the window length.
   uint64 duration_hours = 3;

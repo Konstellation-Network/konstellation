@@ -117,7 +117,8 @@ func setup(t *testing.T) *fixture {
 
 func (f *fixture) flow(t *testing.T) types.Flow {
 	t.Helper()
-	rl, ok := f.k.GetRateLimit(f.ctx, denom, channel)
+	rl, ok, err := f.k.GetRateLimit(f.ctx, denom, channel)
+	require.NoError(t, err)
 	require.True(t, ok)
 	return rl.Flow
 }

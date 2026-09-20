@@ -26,9 +26,27 @@ func (k Keeper) freshFlow(ctx context.Context, denom string) types.Flow {
 	}
 }
 
+// nextFlow starts a new window on an existing limit. The channel value is
+// re-snapshotted from supply — except when supply has gone to zero, which
+// for a voucher or ERC20-origin denom just means everything is currently
+// on the other side. A zero channel value would make the threshold zero
+// and refuse every inbound packet until governance removed the limit
+// (update and reset would snapshot zero again), so the previous non-zero
+// value is carried forward instead; the next window after supply returns
+// re-snapshots as usual.
+func (k Keeper) nextFlow(ctx context.Context, rl types.RateLimit) types.Flow {
+	flow := k.freshFlow(ctx, rl.Path.Denom)
+	if flow.ChannelValue.IsZero() {
+		flow.ChannelValue = rl.Flow.ChannelValue
+	}
+	return flow
+}
+
 // addRateLimit creates a limit on a path that has none.
 func (k Keeper) addRateLimit(ctx context.Context, path types.Path, quota types.Quota, by string) error {
-	if _, exists := k.GetRateLimit(ctx, path.Denom, path.ChannelId); exists {
+	if _, exists, err := k.GetRateLimit(ctx, path.Denom, path.ChannelId); err != nil {
+		return err
+	} else if exists {
 		return errorsmod.Wrapf(types.ErrRateLimitExists, "%s on %s", path.Denom, path.ChannelId)
 	}
 	flow := k.freshFlow(ctx, path.Denom)
@@ -47,13 +65,17 @@ func (k Keeper) addRateLimit(ctx context.Context, path types.Path, quota types.Q
 
 // updateRateLimit replaces the quota and starts a fresh window.
 func (k Keeper) updateRateLimit(ctx context.Context, path types.Path, quota types.Quota, by string) error {
-	if _, exists := k.GetRateLimit(ctx, path.Denom, path.ChannelId); !exists {
+	rl, exists, err := k.GetRateLimit(ctx, path.Denom, path.ChannelId)
+	if err != nil {
+		return err
+	}
+	if !exists {
 		return errorsmod.Wrapf(types.ErrRateLimitNotFound, "%s on %s", path.Denom, path.ChannelId)
 	}
 	if err := k.clearPending(ctx, path); err != nil {
 		return err
 	}
-	if err := k.SetRateLimit(ctx, types.RateLimit{Path: path, Quota: quota, Flow: k.freshFlow(ctx, path.Denom)}); err != nil {
+	if err := k.SetRateLimit(ctx, types.RateLimit{Path: path, Quota: quota, Flow: k.nextFlow(ctx, rl)}); err != nil {
 		return err
 	}
 	emitLimitEvent(ctx, types.EventTypeRateLimitUpdated, path, quota, by)
@@ -62,7 +84,9 @@ func (k Keeper) updateRateLimit(ctx context.Context, path types.Path, quota type
 
 // removeRateLimit deletes a limit.
 func (k Keeper) removeRateLimit(ctx context.Context, path types.Path, by string) error {
-	if _, exists := k.GetRateLimit(ctx, path.Denom, path.ChannelId); !exists {
+	if _, exists, err := k.GetRateLimit(ctx, path.Denom, path.ChannelId); err != nil {
+		return err
+	} else if !exists {
 		return errorsmod.Wrapf(types.ErrRateLimitNotFound, "%s on %s", path.Denom, path.ChannelId)
 	}
 	if err := k.clearPending(ctx, path); err != nil {
@@ -81,7 +105,10 @@ func (k Keeper) removeRateLimit(ctx context.Context, path types.Path, by string)
 
 // resetRateLimit zeroes the flow and starts a fresh window.
 func (k Keeper) resetRateLimit(ctx context.Context, path types.Path, by string) error {
-	rl, exists := k.GetRateLimit(ctx, path.Denom, path.ChannelId)
+	rl, exists, err := k.GetRateLimit(ctx, path.Denom, path.ChannelId)
+	if err != nil {
+		return err
+	}
 	if !exists {
 		return errorsmod.Wrapf(types.ErrRateLimitNotFound, "%s on %s", path.Denom, path.ChannelId)
 	}
@@ -101,7 +128,7 @@ func (k Keeper) resetWindow(ctx context.Context, rl types.RateLimit) error {
 	if err := k.clearPending(ctx, rl.Path); err != nil {
 		return err
 	}
-	rl.Flow = k.freshFlow(ctx, rl.Path.Denom)
+	rl.Flow = k.nextFlow(ctx, rl)
 	if err := k.SetRateLimit(ctx, rl); err != nil {
 		return err
 	}
@@ -135,7 +162,10 @@ func (k Keeper) BeginBlock(ctx context.Context) error {
 // no limit pass untouched. It reports whether a limit applied so the caller
 // knows whether an undo is ever needed.
 func (k Keeper) CheckAndRecord(ctx context.Context, direction types.PacketDirection, denom, channelID string, amount sdkmath.Int) (limited bool, err error) {
-	rl, exists := k.GetRateLimit(ctx, denom, channelID)
+	rl, exists, err := k.GetRateLimit(ctx, denom, channelID)
+	if err != nil {
+		return true, err
+	}
 	if !exists {
 		return false, nil
 	}
@@ -181,9 +211,9 @@ func (k Keeper) UndoSend(ctx context.Context, denom, channelID string, sequence 
 	if err := k.PendingPackets.Remove(ctx, key); err != nil {
 		return err
 	}
-	rl, exists := k.GetRateLimit(ctx, denom, channelID)
-	if !exists {
-		return nil
+	rl, exists, err := k.GetRateLimit(ctx, denom, channelID)
+	if err != nil || !exists {
+		return err
 	}
 	rl.Flow.Outflow = rl.Flow.Outflow.Sub(amount)
 	if rl.Flow.Outflow.IsNegative() {
@@ -195,9 +225,9 @@ func (k Keeper) UndoSend(ctx context.Context, denom, channelID string, sequence 
 // UndoRecv puts a counted receive back when the application rejected the
 // packet after the quota was debited (same window, same block).
 func (k Keeper) UndoRecv(ctx context.Context, denom, channelID string, amount sdkmath.Int) error {
-	rl, exists := k.GetRateLimit(ctx, denom, channelID)
-	if !exists {
-		return nil
+	rl, exists, err := k.GetRateLimit(ctx, denom, channelID)
+	if err != nil || !exists {
+		return err
 	}
 	rl.Flow.Inflow = rl.Flow.Inflow.Sub(amount)
 	if rl.Flow.Inflow.IsNegative() {

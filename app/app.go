@@ -68,7 +68,6 @@ import (
 	"github.com/cosmos/cosmos-sdk/codec"
 	"github.com/cosmos/cosmos-sdk/codec/types"
 	"github.com/cosmos/cosmos-sdk/contrib/x/circuit"
-	circuitante "github.com/cosmos/cosmos-sdk/contrib/x/circuit/ante"
 	circuitkeeper "github.com/cosmos/cosmos-sdk/contrib/x/circuit/keeper"
 	circuittypes "github.com/cosmos/cosmos-sdk/contrib/x/circuit/types"
 	"github.com/cosmos/cosmos-sdk/runtime"
@@ -924,8 +923,8 @@ func (app *KonstellationApp) setAnteHandler(txConfig client.TxConfig, maxGasWant
 
 	// Ante chain, outermost first:
 	//   1. circuit breaker (§13): a disabled message type is refused before
-	//      any signature work. The router re-checks at execution, which is
-	//      what covers messages nested in authz MsgExec.
+	//      any signature work, nested authz MsgExec included (circuit.go).
+	//      The router re-checks at execution.
 	//   2. cosmos/evm's ante.
 	//   3. D6: after cosmos/evm's ante (so EVM senders are signature-verified),
 	//      reject any tx that involves a frozen address (x/compliance/ante).
@@ -937,7 +936,7 @@ func (app *KonstellationApp) setAnteHandler(txConfig client.TxConfig, maxGasWant
 		complianceante.Wrap(evmante.NewAnteHandler(options), app.appCodec, app.ComplianceKeeper),
 	)
 	app.SetAnteHandler(sdk.ChainAnteDecorators(
-		circuitante.NewCircuitBreakerDecorator(&app.CircuitKeeper),
+		circuitDecorator{app},
 		anteHandlerDecorator{inner},
 	))
 }

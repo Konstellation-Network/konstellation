@@ -64,9 +64,13 @@ func TestCircuitBreaker(t *testing.T) {
 	require.Error(t, err, res.Log)
 	require.Equal(t, 0, aliceBefore.Cmp(h.balance(alice.Addr)))
 
-	// Nested in authz MsgExec: the ante decorator only sees the outer
-	// message; the router check at execution is what catches this.
+	// Nested in authz MsgExec: refused at admission too (app/circuit.go
+	// walks into MsgExec), not only by the router at execution, so a
+	// tripped type cannot be smuggled into blocks for its fee.
 	exec := authz.NewMsgExec(alice.AccAddr, []sdk.Msg{send})
+	chk = h.checkTxCosmos(alice, &exec)
+	require.NotZero(t, chk.Code, "authz-wrapped MsgSend admitted to the mempool")
+	require.Contains(t, chk.Log, "circuit breaker disables "+sendURL)
 	res, err = h.sendCosmos(alice, &exec)
 	require.NoError(t, err)
 	require.NotZero(t, res.Code, "authz-wrapped MsgSend slipped past the circuit breaker")

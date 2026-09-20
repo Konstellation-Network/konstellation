@@ -11,9 +11,12 @@
 // ibc-apps one is v10-only, decided 2026-09-19); modelled on its semantics:
 // percentage-of-supply quotas, net flow, pending sends undone on error ack
 // or timeout within the same window. Two deliberate simplifications: no
-// address whitelist, and no async-ack tracking (an application that
-// acknowledges asynchronously and then fails leaves the inflow counted,
-// which can only make the limit stricter, never looser).
+// address whitelist, and no async-ack tracking. The second is safe only
+// because nothing in our stack acknowledges asynchronously (a nil ack from
+// OnRecvPacket): if an app that does is ever added and it later fails, the
+// inflow stays counted, and under net-flow accounting a phantom inflow
+// *widens* the send allowance by that amount — it is not merely stricter.
+// Adding such an app means adding WriteAcknowledgement tracking here.
 package ratelimit
 
 import (
@@ -74,7 +77,11 @@ func (im *IBCMiddleware) SetUnderlyingApplication(app porttypes.IBCModule) {
 
 // OnRecvPacket refuses an inflow over quota with an error acknowledgement —
 // the counterparty refunds its sender — and otherwise counts it. If the
-// application then rejects the packet, the count is undone.
+// application then rejects the packet, the count is undone. That undo is
+// belt-and-braces: core IBC runs OnRecvPacket in a cache context and
+// discards its writes on an unsuccessful ack, so the count would be
+// dropped anyway; it is kept so this module's state is right on its own
+// terms and does not depend on the caller's context handling.
 func (im *IBCMiddleware) OnRecvPacket(ctx sdk.Context, channelVersion string, packet channeltypes.Packet, relayer sdk.AccAddress) exported.Acknowledgement {
 	info, err := keeper.ParsePacketV1(packet, types.PacketRecv)
 	if err != nil {

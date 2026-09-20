@@ -6,6 +6,7 @@ package keeper
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"cosmossdk.io/collections"
@@ -71,13 +72,18 @@ func pathKey(p types.Path) collections.Pair[string, string] {
 	return collections.Join(p.ChannelId, p.Denom)
 }
 
-// GetRateLimit returns the limit on a path, if any.
-func (k Keeper) GetRateLimit(ctx context.Context, denom, channelID string) (types.RateLimit, bool) {
+// GetRateLimit returns the limit on a path, if any. Only a missing entry
+// is "no limit"; any other store or decode error is returned so a rail
+// fails closed rather than silently passing packets unlimited.
+func (k Keeper) GetRateLimit(ctx context.Context, denom, channelID string) (types.RateLimit, bool, error) {
 	rl, err := k.RateLimits.Get(ctx, collections.Join(channelID, denom))
-	if err != nil {
-		return types.RateLimit{}, false
+	switch {
+	case errors.Is(err, collections.ErrNotFound):
+		return types.RateLimit{}, false, nil
+	case err != nil:
+		return types.RateLimit{}, false, err
 	}
-	return rl, true
+	return rl, true, nil
 }
 
 // SetRateLimit stores a limit.

@@ -10,13 +10,11 @@ import (
 	"github.com/cosmos/evm/server"
 	evmtypes "github.com/cosmos/evm/x/vm/types"
 
-	errorsmod "cosmossdk.io/errors"
 	"cosmossdk.io/log/v2"
 
 	"github.com/cosmos/cosmos-sdk/baseapp"
 	servertypes "github.com/cosmos/cosmos-sdk/server/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	sdkerrors "github.com/cosmos/cosmos-sdk/types/errors"
 
 	complianceante "github.com/Konstellation-Network/konstellation/x/compliance/ante"
 )
@@ -132,20 +130,6 @@ func (app *KonstellationApp) mempoolPreCheck(tx sdk.Tx) error {
 		return err
 	}
 	return app.checkBlockedRecipient(ctx, tx)
-}
-
-// checkCircuit is the circuit breaker's ante check, for the pre-check path.
-func (app *KonstellationApp) checkCircuit(ctx sdk.Context, tx sdk.Tx) error {
-	for _, msg := range tx.GetMsgs() {
-		allowed, err := app.CircuitKeeper.IsAllowed(ctx, sdk.MsgTypeURL(msg))
-		if err != nil {
-			return err
-		}
-		if !allowed {
-			return errorsmod.Wrapf(sdkerrors.ErrUnauthorized, "circuit breaker disables %s", sdk.MsgTypeURL(msg))
-		}
-	}
-	return nil
 }
 
 const (

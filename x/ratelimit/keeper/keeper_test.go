@@ -81,7 +81,8 @@ func (f *fixture) add(sendPct, recvPct int64, hours uint64) {
 }
 
 func (f *fixture) flow() types.Flow {
-	rl, ok := f.k.GetRateLimit(f.ctx, denom, channel)
+	rl, ok, err := f.k.GetRateLimit(f.ctx, denom, channel)
+	require.NoError(f.t, err)
 	require.True(f.t, ok)
 	return rl.Flow
 }
@@ -222,6 +223,35 @@ func TestWindowResetSnapshotsSupply(t *testing.T) {
 	require.NoError(t, f.send(200_000, 2), "quota follows the new supply")
 }
 
+// A voucher's supply drops to zero once everything has gone home. A window
+// reset must not snapshot that zero — the threshold would be zero and the
+// path deadlocked until governance removed the limit.
+func TestWindowResetKeepsChannelValueOnZeroSupply(t *testing.T) {
+	f := setup(t)
+	f.add(10, 10, 1)
+	f.bank.supply[denom] = sdkmath.ZeroInt()
+
+	f.advance(time.Hour) // BeginBlock reset
+	require.True(t, f.flow().ChannelValue.Equal(million), "zero supply must carry the previous channel value")
+	require.NoError(t, f.recv(100_000), "inbound still allowed at the old threshold")
+
+	_, err := f.ms.ResetRateLimit(f.ctx, &types.MsgResetRateLimit{Authority: gov, Denom: denom, ChannelId: channel})
+	require.NoError(t, err)
+	require.True(t, f.flow().ChannelValue.Equal(million))
+
+	_, err = f.ms.UpdateRateLimit(f.ctx, &types.MsgUpdateRateLimit{
+		Authority: gov, Denom: denom, ChannelId: channel,
+		MaxPercentSend: sdkmath.NewInt(5), MaxPercentRecv: sdkmath.NewInt(5), DurationHours: 1,
+	})
+	require.NoError(t, err)
+	require.True(t, f.flow().ChannelValue.Equal(million))
+
+	// Once supply is back, the next window snapshots it as usual.
+	f.bank.supply[denom] = sdkmath.NewInt(3_000_000)
+	f.advance(2 * time.Hour)
+	require.True(t, f.flow().ChannelValue.Equal(sdkmath.NewInt(3_000_000)))
+}
+
 func TestUpdateRemoveReset(t *testing.T) {
 	f := setup(t)
 	f.add(10, 10, 24)
@@ -244,7 +274,8 @@ func TestUpdateRemoveReset(t *testing.T) {
 	require.ErrorIs(t, err, types.ErrUnauthorized)
 	_, err = f.ms.RemoveRateLimit(f.ctx, &types.MsgRemoveRateLimit{Authority: gov, Denom: denom, ChannelId: channel})
 	require.NoError(t, err)
-	_, ok := f.k.GetRateLimit(f.ctx, denom, channel)
+	_, ok, err := f.k.GetRateLimit(f.ctx, denom, channel)
+	require.NoError(t, err)
 	require.False(t, ok)
 	require.NoError(t, f.send(million.Int64(), 3), "no limit, no gate")
 	_, err = f.ms.ResetRateLimit(f.ctx, &types.MsgResetRateLimit{Authority: gov, Denom: denom, ChannelId: channel})
