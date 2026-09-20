@@ -5,9 +5,13 @@ package integration
 import (
 	"testing"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/stretchr/testify/require"
 
+	ics20precompile "github.com/cosmos/evm/precompiles/ics20"
+	stakingprecompile "github.com/cosmos/evm/precompiles/staking"
 	evmtypes "github.com/cosmos/evm/x/vm/types"
+	transfertypes "github.com/cosmos/ibc-go/v11/modules/apps/transfer/types"
 
 	sdkmath "cosmossdk.io/math"
 
@@ -15,6 +19,8 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/x/authz"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
+	govv1 "github.com/cosmos/cosmos-sdk/x/gov/types/v1"
+	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 
 	"github.com/Konstellation-Network/konstellation/app/config"
 )
@@ -102,4 +108,87 @@ func TestCircuitBreaker(t *testing.T) {
 	require.Zero(t, res.Code, res.Log)
 	res, err = h.sendEVM(alice, xfer)
 	require.NoError(t, err, res.Log)
+}
+
+// TestCircuitBreakerCoversPrecompiles: cosmos/evm's tx-path precompiles
+// call keepers and msg servers directly, never the router, so without
+// app/circuit_precompiles.go a tripped MsgTransfer stopped Cosmos senders and
+// left the ICS20 precompile open (PR #12 review). Now the precompile reverts
+// with the same reason the ante gives.
+func TestCircuitBreakerCoversPrecompiles(t *testing.T) {
+	h := newHarness(t)
+	admin, alice := h.authority, h.key(1)
+	validator := h.nw.GetValidators()[0].OperatorAddress
+	staking := common.HexToAddress(evmtypes.StakingPrecompileAddress)
+	ics20 := common.HexToAddress(evmtypes.ICS20PrecompileAddress)
+	stakingC := evmtypes.CompiledContract{ABI: stakingprecompile.ABI}
+	ics20C := evmtypes.CompiledContract{ABI: ics20precompile.ABI}
+	delegateURL := sdk.MsgTypeURL(&stakingtypes.MsgDelegate{})
+	transferURL := sdk.MsgTypeURL(&transfertypes.MsgTransfer{})
+	timeout := struct {
+		RevisionNumber uint64
+		RevisionHeight uint64
+	}{0, 0}
+
+	// Positive control: with nothing tripped the staking precompile
+	// delegates, and the ICS20 precompile fails for the ordinary reason
+	// (this chain has no channel), not the breaker's.
+	res, err := h.call(alice, staking, stakingC, "delegate", alice.Addr, validator, oneKASH)
+	require.NoError(t, err, res.Log)
+	_, err = h.call(alice, ics20, ics20C, "transfer", "transfer", "channel-0", config.BaseDenom, oneKASH, alice.Addr, "kons1receiver", timeout, uint64(0), "")
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "circuit breaker")
+
+	// Trip both message types.
+	res, err = h.sendCosmos(admin, &circuittypes.MsgTripCircuitBreaker{
+		Authority: admin.AccAddr.String(), MsgTypeUrls: []string{delegateURL, transferURL},
+	})
+	require.NoError(t, err)
+	require.Zero(t, res.Code, res.Log)
+
+	// The precompiles now revert with the reason.
+	_, err = h.call(alice, staking, stakingC, "delegate", alice.Addr, validator, oneKASH)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "circuit breaker disables "+delegateURL)
+	_, err = h.call(alice, ics20, ics20C, "transfer", "transfer", "channel-0", config.BaseDenom, oneKASH, alice.Addr, "kons1receiver", timeout, uint64(0), "")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "circuit breaker disables "+transferURL)
+
+	// Other precompile methods, and queries on the same precompile, still work.
+	_, err = h.query(staking, stakingC, "delegation", alice.Addr, validator)
+	require.NoError(t, err)
+	res, err = h.call(alice, staking, stakingC, "undelegate", alice.Addr, validator, oneKASH)
+	require.NoError(t, err, res.Log)
+
+	// Reset restores the precompile path too.
+	res, err = h.sendCosmos(admin, &circuittypes.MsgResetCircuitBreaker{
+		Authority: admin.AccAddr.String(), MsgTypeUrls: []string{delegateURL, transferURL},
+	})
+	require.NoError(t, err)
+	require.Zero(t, res.Code, res.Log)
+	res, err = h.call(alice, staking, stakingC, "delegate", alice.Addr, validator, oneKASH)
+	require.NoError(t, err, res.Log)
+}
+
+// TestCircuitBreakerCannotWeldItselfShut: the breaker's own messages and
+// governance's can never be disabled, so a trip is always resettable
+// (PR #12 review).
+func TestCircuitBreakerCannotWeldItselfShut(t *testing.T) {
+	h := newHarness(t)
+	admin := h.authority
+	for _, url := range []string{
+		sdk.MsgTypeURL(&circuittypes.MsgResetCircuitBreaker{}),
+		sdk.MsgTypeURL(&circuittypes.MsgTripCircuitBreaker{}),
+		sdk.MsgTypeURL(&govv1.MsgVote{}),
+		sdk.MsgTypeURL(&govv1.MsgSubmitProposal{}),
+	} {
+		trip := &circuittypes.MsgTripCircuitBreaker{Authority: admin.AccAddr.String(), MsgTypeUrls: []string{url}}
+		chk := h.checkTxCosmos(admin, trip)
+		require.NotZero(t, chk.Code, url)
+		require.Contains(t, chk.Log, "cannot be disabled")
+		// Even delivered by a proposer that skipped CheckTx, it is refused.
+		res, err := h.sendCosmos(admin, trip)
+		require.NoError(t, err)
+		require.NotZero(t, res.Code, url)
+	}
 }

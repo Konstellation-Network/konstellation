@@ -10,7 +10,8 @@ option go_package = "github.com/Konstellation-Network/konstellation/x/ratelimit/
 
 // Msg is the rate-limit transaction service. Every message is governance
 // only: limits change through proposals. The emergency lever is elsewhere —
-// the circuit breaker can disable MsgTransfer outright, immediately.
+// the circuit breaker can disable MsgTransfer outright, immediately — for
+// Cosmos senders and for the ICS20 precompile alike.
 service Msg {
   option (cosmos.msg.v1.service) = true;
 

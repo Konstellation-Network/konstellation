@@ -468,8 +468,12 @@ func New(
 	// in the network's genesis (`account_permissions`), not here. Checked on
 	// every message the router executes — nested authz included — via
 	// SetCircuitBreaker, which must be set before RegisterServices so hybrid
-	// handlers are decorated too; and at the ante/mempool stage so a disabled
-	// message type is refused at submission with the reason.
+	// handlers are decorated too; at the ante/mempool stage so a disabled
+	// message type is refused at submission with the reason; and inside the
+	// tx-path precompiles, which call keepers directly and never see the
+	// router (circuit_precompiles.go). circuitBreaker (circuit.go) is the
+	// one view all of them consult: it never disables the module's own
+	// messages or governance's, so a trip is always resettable.
 	//
 	// The module is SDK contrib code (deprecated by Cosmos Labs in v0.54,
 	// unmaintained, outside their bug bounty; decided 2026-09-19 to use it
@@ -481,7 +485,7 @@ func New(
 		authAddr,
 		app.AccountKeeper.AddressCodec(),
 	)
-	app.SetCircuitBreaker(&app.CircuitKeeper)
+	app.SetCircuitBreaker(circuitBreaker{&app.CircuitKeeper})
 
 	// D6 compliance lists. Built before the EVM keeper so the precompile can
 	// read them.
@@ -527,7 +531,7 @@ func New(
 		evmChainID,
 		tracer,
 	).WithStaticPrecompiles(
-		withCompliancePrecompile(
+		withCircuitGuard(withCompliancePrecompile(
 			precompiletypes.DefaultStaticPrecompiles(
 				*app.StakingKeeper,
 				app.DistrKeeper,
@@ -541,7 +545,7 @@ func New(
 				appCodec,
 			),
 			app.ComplianceKeeper,
-		),
+		), circuitBreaker{&app.CircuitKeeper}),
 	)
 
 	// A block-list add clears any EIP-7702 delegation on the frozen account
