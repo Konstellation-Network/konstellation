@@ -1,0 +1,148 @@
+# Release build (ENGINEERING.md §2.6, §6.1): every binary a network runs comes
+# from here — built twice on identical runners, published only when the two
+# checksums agree, with GitHub build provenance attached. Never from a laptop
+# or a validator.
+#
+# Trigger: a *signed* tag v*. Steps to cut one are in RELEASING.md.
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.8" # go.mod's `toolchain`; keep in step with ci.yml
+
+jobs:
+  # Refuse unsigned tags before spending a build on them.
+  tag:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Tag must be annotated and signed
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          [ "$(git cat-file -t "$tag")" = "tag" ] || { echo "::error::$tag is a lightweight tag; use git tag -s"; exit 1; }
+          git cat-file tag "$tag" | grep -Eq -- '-----BEGIN (PGP|SSH) SIGNATURE-----' \
+            || { echo "::error::$tag is not signed; use git tag -s"; exit 1; }
+      - id: v
+        run: echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+  # Two independent builds of the same tag. Any difference between them is a
+  # non-determinism bug, and no release is published.
+  build:
+    needs: tag
+    strategy:
+      matrix:
+        attempt: [1, 2]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # git describe needs the tag
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false # a warm cache is one more input; release builds start cold
+      - name: Dependency policy (ENGINEERING.md §2.2, §2.3)
+        run: make verify-deps
+      - name: Build linux-amd64
+        run: |
+          make build-linux
+          v="${{ needs.tag.outputs.version }}"
+          asset="konstellationd-${v}-linux-amd64"
+          mv build/konstellationd "build/$asset"
+          (cd build && sha256sum "$asset" > "$asset.sha256")
+          cat "build/$asset.sha256"
+      - name: Version string matches the tag
+        run: |
+          v="${{ needs.tag.outputs.version }}"
+          got="$(build/konstellationd-${v}-linux-amd64 version 2>/dev/null | head -1)"
+          echo "binary reports: $got"
+          [ "$got" = "$v" ] || { echo "::error::binary version '$got' != tag '$v' (dirty tree or missing tag at build?)"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.attempt }}
+          path: build/konstellationd-*
+          if-no-files-found: error
+
+  # ENGINEERING.md §4.3: the release binary passes govulncheck, allow-list aside.
+  vulncheck:
+    needs: tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - run: make vulncheck-binary
+
+  publish:
+    needs: [tag, build, vulncheck]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the release
+      id-token: write # provenance attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dl
+      - name: Builds must be identical
+        run: |
+          a="$(cat dl/build-1/*.sha256 | awk '{print $1}')"
+          b="$(cat dl/build-2/*.sha256 | awk '{print $1}')"
+          echo "build-1: $a"; echo "build-2: $b"
+          [ "$a" = "$b" ] || { echo "::error::non-reproducible build: checksums differ"; exit 1; }
+          mkdir release && cp dl/build-1/* release/
+          (cd release && mv ./*.sha256 SHA256SUMS && cat SHA256SUMS)
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release/konstellationd-*-linux-amd64
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${{ needs.tag.outputs.version }}"
+          notes="$(mktemp)"
+          {
+            echo "## Binary"
+            echo
+            echo '```'
+            cat release/SHA256SUMS
+            echo '```'
+            echo
+            echo "Built twice on independent runners from signed tag \`$v\` with Go ${GO_VERSION}; both checksums matched. Verify the download with \`sha256sum -c SHA256SUMS\` and its provenance with:"
+            echo
+            echo '```'
+            echo "gh attestation verify konstellationd-${v}-linux-amd64 --owner ${GITHUB_REPOSITORY_OWNER}"
+            echo '```'
+            echo
+            echo "Record the checksum in \`networks/RELEASES.md\` (ENGINEERING.md §5.2) before any network runs it."
+          } > "$notes"
+          gh release create "$v" \
+            --verify-tag \
+            --title "$v" \
+            --notes-file "$notes" \
+            --generate-notes \
+            release/konstellationd-"$v"-linux-amd64 release/SHA256SUMS
