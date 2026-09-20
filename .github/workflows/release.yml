@@ -3,7 +3,9 @@
 # checksums agree, with GitHub build provenance attached. Never from a laptop
 # or a validator.
 #
-# Trigger: a *signed* tag v*. Steps to cut one are in RELEASING.md.
+# Trigger: a version tag (vX.Y.Z[-suffix]) that is signed with a key GitHub
+# verifies for the tagger and points at a commit on main. Steps to cut one
+# are in RELEASING.md. A pre-release suffix publishes a pre-release.
 name: release
 on:
   push:
@@ -16,24 +18,53 @@ env:
   GO_VERSION: "1.26.8" # go.mod's `toolchain`; keep in step with ci.yml
 
 jobs:
-  # Refuse unsigned tags before spending a build on them.
+  # Refuse a tag before spending a build on it unless it is a well-formed
+  # version, signed by a key GitHub can verify, and points at a commit on main.
   tag:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Tag must be annotated and signed
+      - name: Tag name is a version
+        # Strict semver with an optional pre-release suffix (v1.2.3, v1.2.3-rc1).
+        # Later steps put the name in shell and file names, so nothing else
+        # may pass, whatever `tags: ["v*"]` let through.
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          echo "$tag" | grep -Eq -- '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$' \
+            || { echo "::error::'$tag' is not a version tag (vMAJOR.MINOR.PATCH[-suffix])"; exit 1; }
+      - name: Tag is annotated and signed with a key GitHub verifies
+        # Presence of a signature block is not enough: any throwaway key
+        # produces one. GitHub checks the signature against the tagger's
+        # registered signing keys and records the verdict on the tag object.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           tag="${GITHUB_REF_NAME}"
           [ "$(git cat-file -t "$tag")" = "tag" ] || { echo "::error::$tag is a lightweight tag; use git tag -s"; exit 1; }
-          git cat-file tag "$tag" | grep -Eq -- '-----BEGIN (PGP|SSH) SIGNATURE-----' \
-            || { echo "::error::$tag is not signed; use git tag -s"; exit 1; }
+          sha="$(git rev-parse "$tag")"
+          verdict="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" --jq '.verification | "\(.verified) \(.reason)"')"
+          echo "GitHub verification: $verdict"
+          [ "$verdict" = "true valid" ] \
+            || { echo "::error::$tag is not signed with a key registered on GitHub for the tagger ($verdict); see RELEASING.md"; exit 1; }
+      - name: Tagged commit is on main
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          git merge-base --is-ancestor "${tag}^{commit}" origin/main \
+            || { echo "::error::$tag points at $(git rev-parse --short "${tag}^{commit}"), which is not on main"; exit 1; }
       - id: v
-        run: echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+          case "$tag" in
+            *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *)   echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
 
   # Two independent builds of the same tag. Any difference between them is a
   # non-determinism bug, and no release is published.
@@ -59,17 +90,21 @@ jobs:
       - name: Dependency policy (ENGINEERING.md §2.2, §2.3)
         run: make verify-deps
       - name: Build linux-amd64
+        env:
+          V: ${{ needs.tag.outputs.version }}
         run: |
           make build-linux
-          v="${{ needs.tag.outputs.version }}"
+          v="$V"
           asset="konstellationd-${v}-linux-amd64"
           mv build/konstellationd "build/$asset"
           (cd build && sha256sum "$asset" > "$asset.sha256")
           cat "build/$asset.sha256"
       - name: Version string matches the tag
+        env:
+          V: ${{ needs.tag.outputs.version }}
         run: |
-          v="${{ needs.tag.outputs.version }}"
-          got="$(build/konstellationd-${v}-linux-amd64 version 2>/dev/null | head -1)"
+          v="$V"
+          got="$("build/konstellationd-${v}-linux-amd64" version 2>/dev/null | head -1)"
           echo "binary reports: $got"
           [ "$got" = "$v" ] || { echo "::error::binary version '$got' != tag '$v' (dirty tree or missing tag at build?)"; exit 1; }
       - uses: actions/upload-artifact@v4
@@ -122,8 +157,12 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          V: ${{ needs.tag.outputs.version }}
+          PRERELEASE: ${{ needs.tag.outputs.prerelease }}
         run: |
-          v="${{ needs.tag.outputs.version }}"
+          v="$V"
+          pre=()
+          [ "$PRERELEASE" = "true" ] && pre=(--prerelease) # never becomes "Latest"
           notes="$(mktemp)"
           {
             echo "## Binary"
@@ -140,7 +179,7 @@ jobs:
             echo
             echo "Record the checksum in \`networks/RELEASES.md\` (ENGINEERING.md §5.2) before any network runs it."
           } > "$notes"
-          gh release create "$v" \
+          gh release create "$v" "${pre[@]}" \
             --verify-tag \
             --title "$v" \
             --notes-file "$notes" \

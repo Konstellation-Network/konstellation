@@ -22,10 +22,18 @@ Nothing is built by hand.
 
 ## Tag
 
-Tags are annotated and **signed**; the workflow refuses anything else. Set up
-signing once (SSH is simplest — `git config --global gpg.format ssh` and
-`user.signingkey` pointing at a public key that is also registered on GitHub
-as a *signing* key, so the tag shows "Verified"):
+The workflow builds only a tag that passes three gates, checked before any
+build starts:
+
+1. The name is `vMAJOR.MINOR.PATCH` with an optional `-suffix` (`v1.0.0-rc1`).
+   Nothing else — the name ends up in shell and file names.
+2. It is annotated and **signed with a key GitHub verifies for the tagger**
+   (the tag shows "Verified" on GitHub). A signature from an unregistered key
+   is refused, not just an unsigned tag. Set up signing once — SSH is
+   simplest: `git config --global gpg.format ssh` and `user.signingkey`
+   pointing at a public key that is also registered on GitHub as a
+   *signing* key (Settings → SSH and GPG keys → "Signing Key").
+3. The tagged commit is on `main`.
 
 ```sh
 git checkout main && git pull --ff-only
@@ -37,6 +45,11 @@ Version scheme: semver. `v0.x` until mainnet genesis; the mainnet genesis
 binary is `v1.0.0`. State-breaking upgrades bump the minor (or major after
 1.0), everything else the patch. The tag is what `konstellationd version`
 prints — the workflow checks that.
+
+A tag with a suffix (`v1.1.0-rc1` for the testnet upgrade drill, ENGINEERING.md
+§15) is published as a GitHub *pre-release*: it never becomes "Latest", so
+`gh release download` without a tag and the release badge keep pointing at the
+last real release. Mainnet only ever runs an unsuffixed version.
 
 ## After the workflow finishes
 
@@ -56,10 +69,18 @@ prints — the workflow checks that.
 
 ## If the workflow fails
 
-- *tag is not signed*: delete the tag (`git push origin :refs/tags/vX`,
-  `git tag -d vX`), sign, push again. Never re-use a tag that was published.
+- *not a version tag*, *not signed with a key registered on GitHub*, *not on
+  main*: delete the tag (`git push origin :refs/tags/vX`, `git tag -d vX`),
+  fix the cause, tag again. Never re-use a tag that was published. The
+  signature verdict in the log is GitHub's `verification.reason`
+  (`unknown_key`: the key is not registered as a signing key for the
+  tagger's account; `unverified_email`: the tagger email is not verified on
+  that account).
 - *non-reproducible build*: the two runners produced different binaries. Do
-  not publish by hand. Find the input that differs (a dependency resolved at
-  build time, an unpinned tool, a timestamp in the build) and fix it.
+  not publish by hand. Re-run the workflow once first: the two builds must
+  land on the same `ubuntu-24.04` runner image, and during a GitHub image
+  rollout they can differ (CGO is on, so the system compiler is an input). If
+  it fails again, find the input that differs (a dependency resolved at build
+  time, an unpinned tool, a timestamp in the build) and fix it.
 - *vulncheck*: a reachable advisory not in `.govulncheck-allowlist`. Fix or
   justify under ENGINEERING.md §4.1.1 — in a PR, not in the release.
