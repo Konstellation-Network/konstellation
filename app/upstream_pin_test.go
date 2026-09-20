@@ -2,6 +2,7 @@ package app
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -64,5 +65,40 @@ func TestUpstreamCouplingPins(t *testing.T) {
   - x/compliance/ante extracts EIP-7702 authorities from SetCodeAuthorizations;
     confirm x/vm/keeper/state_transition.go still applies them the same way.
 `, got, pinnedEVM, pinnedEVM)
+	}
+}
+
+// TestWorkflowsPinGoModToolchain: the CI workflows pin setup-go to an exact
+// Go version because setup-go reads only go.mod's `go` line, then `go`
+// downloads the `toolchain` version into the module cache a second time and
+// the cache restore collides with it (2026-09-20, disk-full link failures).
+// The pin must follow go.mod's `toolchain` line, in every job.
+func TestWorkflowsPinGoModToolchain(t *testing.T) {
+	gomod, err := os.ReadFile("../go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolchain := regexp.MustCompile(`(?m)^toolchain go(\S+)`).FindSubmatch(gomod)
+	if toolchain == nil {
+		t.Fatal("go.mod has no toolchain line")
+	}
+	want := string(toolchain[1])
+	for _, wf := range []string{"../.github/workflows/ci.yml", "../.github/workflows/vuln.yml"} {
+		bz, err := os.ReadFile(wf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pins := regexp.MustCompile(`go-version:\s*"([^"]+)"`).FindAllSubmatch(bz, -1)
+		if len(pins) == 0 {
+			t.Errorf("%s: no setup-go go-version pin", wf)
+		}
+		for _, p := range pins {
+			if got := string(p[1]); got != want {
+				t.Errorf("%s pins go-version %q; go.mod toolchain is go%s", wf, got, want)
+			}
+		}
+		if regexp.MustCompile(`go-version-file:`).Match(bz) {
+			t.Errorf("%s: uses go-version-file, which ignores go.mod's toolchain line", wf)
+		}
 	}
 }
