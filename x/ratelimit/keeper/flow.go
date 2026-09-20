@@ -50,11 +50,15 @@ func (k Keeper) addRateLimit(ctx context.Context, path types.Path, quota types.Q
 		return errorsmod.Wrapf(types.ErrRateLimitExists, "%s on %s", path.Denom, path.ChannelId)
 	}
 	flow := k.freshFlow(ctx, path.Denom)
-	if flow.ChannelValue.IsZero() {
+	if flow.ChannelValue.IsZero() && !quota.Bootstraps() {
 		// A limit on a denom with no supply would be a limit of zero.
 		// Refuse so a typo in the denom is caught by the proposal, not by
-		// every transfer afterwards.
-		return errorsmod.Wrapf(types.ErrZeroSupply, "%s", path.Denom)
+		// every transfer afterwards. The exception is a foreign token
+		// limited before its first packet: its voucher has no supply yet,
+		// and a positive absolute receive cap is what the limit means until
+		// it does (§15 phase 9 sets quotas before a channel carries value).
+		return errorsmod.Wrapf(types.ErrZeroSupply,
+			"%s (to limit a foreign token before it arrives, set max_percent_recv and max_absolute_recv)", path.Denom)
 	}
 	if err := k.SetRateLimit(ctx, types.RateLimit{Path: path, Quota: quota, Flow: flow}); err != nil {
 		return err

@@ -363,7 +363,7 @@ func RegisterQueryHandlerClient(ctx context.Context, mux *runtime.ServeMux, clie
 var (
 	pattern_Query_RateLimits_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 2, 3}, []string{"konstellation", "ratelimit", "v1", "rate_limits"}, "", runtime.AssumeColonVerbOpt(false)))
 
-	pattern_Query_RateLimit_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 2, 3, 1, 0, 4, 1, 5, 4, 1, 0, 4, 1, 5, 5}, []string{"konstellation", "ratelimit", "v1", "rate_limit", "channel_id", "denom"}, "", runtime.AssumeColonVerbOpt(false)))
+	pattern_Query_RateLimit_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 2, 3, 1, 0, 4, 1, 5, 4, 3, 0, 4, 1, 5, 5}, []string{"konstellation", "ratelimit", "v1", "rate_limit", "channel_id", "denom"}, "", runtime.AssumeColonVerbOpt(false)))
 
 	pattern_Query_RateLimitsByChannel_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2, 2, 3, 1, 0, 4, 1, 5, 4}, []string{"konstellation", "ratelimit", "v1", "rate_limits", "channel_id"}, "", runtime.AssumeColonVerbOpt(false)))
 )

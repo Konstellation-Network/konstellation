@@ -15,7 +15,9 @@ service Query {
   }
   // RateLimit returns one path's limit and flow.
   rpc RateLimit(QueryRateLimitRequest) returns (QueryRateLimitResponse) {
-    option (google.api.http).get = "/konstellation/ratelimit/v1/rate_limit/{channel_id}/{denom}";
+    // denom is the trailing multi-segment parameter so ibc/<hash> vouchers
+    // match (grpc-gateway splits a single-segment {denom} on the slash).
+    option (google.api.http).get = "/konstellation/ratelimit/v1/rate_limit/{channel_id}/{denom=**}";
   }
   // RateLimitsByChannel lists the limits on one channel.
   rpc RateLimitsByChannel(QueryRateLimitsByChannelRequest) returns (QueryRateLimitsByChannelResponse) {

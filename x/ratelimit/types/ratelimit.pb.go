@@ -105,7 +105,11 @@ type Quota struct {
 	// base units regardless of supply; the effective threshold is the lower
 	// of it and the percentage. 0 (or unset) means no absolute cap.
 	MaxAbsoluteSend cosmossdk_io_math.Int `protobuf:"bytes,4,opt,name=max_absolute_send,json=maxAbsoluteSend,proto3,customtype=cosmossdk.io/math.Int" json:"max_absolute_send"`
-	// max_absolute_recv is the same for net inflow.
+	// max_absolute_recv is the same for net inflow. It is also how a limit is
+	// set on a foreign token's path *before* the first packet arrives: the
+	// ibc/<hash> voucher has no supply yet, so a percentage of it is nothing;
+	// with a positive percentage and a positive absolute cap, the cap stands
+	// alone until supply exists.
 	MaxAbsoluteRecv cosmossdk_io_math.Int `protobuf:"bytes,5,opt,name=max_absolute_recv,json=maxAbsoluteRecv,proto3,customtype=cosmossdk.io/math.Int" json:"max_absolute_recv"`
 }
 

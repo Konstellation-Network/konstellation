@@ -87,6 +87,14 @@ func (f *fixture) flow() types.Flow {
 	return rl.Flow
 }
 
+func (f *fixture) mustLimit(d string) types.RateLimit {
+	f.t.Helper()
+	rl, ok, err := f.k.GetRateLimit(f.ctx, d, channel)
+	require.NoError(f.t, err)
+	require.True(f.t, ok)
+	return rl
+}
+
 func (f *fixture) send(amount int64, seq uint64) error {
 	return f.k.OnSend(f.ctx, keeper.PacketInfo{Denom: denom, ChannelID: channel, Amount: sdkmath.NewInt(amount)}, seq)
 }
@@ -217,6 +225,45 @@ func TestAbsoluteCap(t *testing.T) {
 		MaxAbsoluteRecv: sdkmath.NewInt(-1),
 	})
 	require.ErrorIs(t, err, types.ErrInvalidQuota)
+}
+
+// A foreign token's path is limited before its first packet: the voucher
+// has no supply, so the absolute receive cap stands alone until it does
+// (ENGINEERING.md §15 phase 9: quotas before a channel carries value).
+func TestBootstrapForeignVoucher(t *testing.T) {
+	f := setup(t)
+	const voucher = "ibc/NEW" // absent from the fake bank: supply 0
+	add := func(pct, abs int64) error {
+		_, err := f.ms.AddRateLimit(f.ctx, &types.MsgAddRateLimit{
+			Authority: gov, Denom: voucher, ChannelId: channel,
+			MaxPercentSend: sdkmath.NewInt(pct), MaxPercentRecv: sdkmath.NewInt(pct), DurationHours: 24,
+			MaxAbsoluteRecv: sdkmath.NewInt(abs),
+		})
+		return err
+	}
+	recv := func(amount int64) error {
+		return f.k.OnRecv(f.ctx, keeper.PacketInfo{Denom: voucher, ChannelID: channel, Amount: sdkmath.NewInt(amount)})
+	}
+
+	// Without an absolute cap the typo guard still applies …
+	require.ErrorIs(t, add(10, 0), types.ErrZeroSupply)
+	// … and a zero percentage does not bootstrap either (it allows nothing).
+	require.ErrorIs(t, add(0, 50_000), types.ErrZeroSupply)
+
+	require.NoError(t, add(10, 50_000))
+	require.True(t, f.mustLimit(voucher).Flow.ChannelValue.IsZero())
+	require.NoError(t, recv(50_000))
+	require.ErrorIs(t, recv(1), types.ErrQuotaExceeded)
+
+	// Once the voucher has been minted, the next window snapshots it and
+	// the lower of the percentage and the cap applies.
+	f.bank.supply[voucher] = sdkmath.NewInt(200_000)
+	f.advance(24 * time.Hour)
+	rl := f.mustLimit(voucher)
+	require.True(t, rl.Flow.ChannelValue.Equal(sdkmath.NewInt(200_000)))
+	require.True(t, rl.Quota.Threshold(types.PacketRecv, rl.Flow.ChannelValue).Equal(sdkmath.NewInt(20_000)), "10% of 200 000 < 50 000")
+	require.NoError(t, recv(20_000))
+	require.ErrorIs(t, recv(1), types.ErrQuotaExceeded)
 }
 
 func TestUndoSendOnlyWithinWindow(t *testing.T) {

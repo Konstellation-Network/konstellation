@@ -42,13 +42,26 @@ func (q Quota) Normalized() Quota {
 }
 
 // Threshold is the amount a percentage of channelValue allows, capped by
-// absolute when that is positive.
+// absolute when that is positive. When channelValue is zero — a foreign
+// token whose voucher has not been minted yet — a positive percentage
+// allows nothing, so the absolute cap stands alone; that is how a path is
+// limited before its first packet. A zero percentage still allows nothing.
 func Threshold(percent, channelValue, absolute sdkmath.Int) sdkmath.Int {
 	t := channelValue.Mul(percent).Quo(sdkmath.NewInt(100))
-	if !absolute.IsNil() && absolute.IsPositive() && absolute.LT(t) {
+	hasAbsolute := !absolute.IsNil() && absolute.IsPositive()
+	if channelValue.IsZero() && percent.IsPositive() && hasAbsolute {
+		return absolute
+	}
+	if hasAbsolute && absolute.LT(t) {
 		return absolute
 	}
 	return t
+}
+
+// Bootstraps reports whether q can limit a path whose denom has no supply
+// yet: a positive receive percentage with a positive absolute receive cap.
+func (q Quota) Bootstraps() bool {
+	return q.MaxPercentRecv.IsPositive() && !q.MaxAbsoluteRecv.IsNil() && q.MaxAbsoluteRecv.IsPositive()
 }
 
 // Threshold is the amount the quota allows in direction for the window
