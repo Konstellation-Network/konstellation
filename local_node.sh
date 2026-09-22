@@ -246,6 +246,13 @@ if [[ $overwrite == "y" || $overwrite == "Y" ]]; then
   # with 60 s timelocks so scheduled updates and emergency expiries can be
   # exercised in a session. Mainnet: foundation multisig, 24 h (TOKENOMICS /
   # ENGINEERING.md §11 D6); set in networks/<net>/genesis.json, never here.
+  # Circuit breaker (D14/D16): the same key is LEVEL_SUPER_ADMIN, the role the
+  # 3-of-5 operations multisig holds on a real network (ENGINEERING.md §18).
+  # `init` already ships MsgCreateValidator in disabled_type_urls on every
+  # chain-id, so a dev can rehearse the admission window here:
+  #   konstellationd tx circuit reset /cosmos.staking.v1beta1.MsgCreateValidator --from mykey
+  #   konstellationd tx staking create-validator ...        # the operator
+  #   konstellationd tx circuit disable /cosmos.staking.v1beta1.MsgCreateValidator --from mykey
   VAL_ADDR=$(konstellationd keys show "$VAL_KEY" -a --keyring-backend "$KEYRING" --home "$CHAINDIR")
   jq --arg auth "$VAL_ADDR" '.consensus.params.block.max_gas="10000000"
     | .app_state.gov.params.max_deposit_period="30s"
@@ -253,7 +260,8 @@ if [[ $overwrite == "y" || $overwrite == "Y" ]]; then
     | .app_state.gov.params.expedited_voting_period="15s"
     | .app_state.compliance.params.authority=$auth
     | .app_state.compliance.params.timelock="60s"
-    | .app_state.compliance.params.allowlist_add_timelock="60s"' \
+    | .app_state.compliance.params.allowlist_add_timelock="60s"
+    | .app_state.circuit.account_permissions=[{"address":$auth,"permissions":{"level":"LEVEL_SUPER_ADMIN","limit_type_urls":[]}}]' \
     "$GENESIS" >"$TMP_GENESIS" && mv "$TMP_GENESIS" "$GENESIS"
 
   # fund validator (devs already funded in the loop)

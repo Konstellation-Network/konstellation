@@ -10,6 +10,7 @@ import (
 
 	"cosmossdk.io/math"
 
+	circuittypes "github.com/cosmos/cosmos-sdk/contrib/x/circuit/types"
 	minttypes "github.com/cosmos/cosmos-sdk/x/mint/types"
 
 	"github.com/Konstellation-Network/konstellation/app/config"
@@ -102,4 +103,18 @@ func NewFeeMarketGenesisState() *feemarkettypes.GenesisState {
 	feeMarketGenState.Params.MinGasPrice = config.FeeMarketMinGasPrice
 
 	return feeMarketGenState
+}
+
+// NewCircuitGenesisState returns the default genesis state for the circuit
+// breaker (ENGINEERING.md §13.1, D14): no permissions — the super admin (the
+// 3-of-5 operations multisig on a real network, the validator key on a dev
+// chain) is written into networks/<net>/genesis.json, never into code — and
+// D16's disable list, so MsgCreateValidator is refused from block 1 on every
+// network (config.CircuitDisabledTypeURLs). Nothing protected can be listed:
+// app/circuit.go ignores the breaker's own and governance's messages whatever
+// the list says, so this can never weld the reset shut.
+func NewCircuitGenesisState() *circuittypes.GenesisState {
+	gs := circuittypes.DefaultGenesisState()
+	gs.DisabledTypeUrls = slices.Clone(config.CircuitDisabledTypeURLs)
+	return gs
 }
