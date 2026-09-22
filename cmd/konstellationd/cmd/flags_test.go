@@ -7,12 +7,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/gorilla/websocket"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	cmtcli "github.com/cometbft/cometbft/libs/cli"
 
@@ -42,6 +44,7 @@ func TestRepairSliceFlags(t *testing.T) {
 	cmd.Flags().StringSlice("origins", []string{"127.0.0.1", "localhost"}, "")
 	cmd.Flags().StringSlice("events", []string{}, "")
 	cmd.Flags().StringSlice("user", []string{"d"}, "")
+	cmd.Flags().StringSlice("bracketed-default", []string{"[untouched]"}, "")
 	cmd.Flags().String("scalar", "", "")
 	if err := cmd.ParseFlags([]string{"--user", "[not,mangled]"}); err != nil {
 		t.Fatal(err)
@@ -69,6 +72,11 @@ func TestRepairSliceFlags(t *testing.T) {
 	// A value the user passed is theirs, bracketed or not.
 	if got, _ := cmd.Flags().GetStringSlice("user"); strings.Join(got, ",") != "[not,mangled]" {
 		t.Errorf("user-set flag rewritten: %q", got)
+	}
+	// A flag nobody set (not the user, not the SDK) is not touched even if
+	// its default looks mangled.
+	if got, _ := cmd.Flags().GetStringSlice("bracketed-default"); strings.Join(got, ",") != "[untouched]" {
+		t.Errorf("untouched default rewritten: %q", got)
 	}
 }
 
@@ -147,11 +155,21 @@ func TestStartHonoursAppTomlWSOrigins(t *testing.T) {
 		t.Fatalf("ws-origins from the flag: %q", cfg.JSONRPC.WSOrigins)
 	}
 
-	// The only slice value the same app.toml writes as an array besides
-	// ws-origins is the SDK's index-events; it must come back empty, not as
-	// the one bogus key "[]".
-	if got := sdkserver.GetServerContextFromCmd(start).Viper.GetStringSlice(sdkserver.FlagIndexEvents); len(got) != 0 {
-		t.Errorf("index-events: %q", got)
+	// The two cosmos/evm string-slice flags are the whole affected set. The
+	// only other slice on `start` is x/upgrade's --unsafe-skip-upgrades, an
+	// int slice with no app.toml key, so the SDK never fills it from the
+	// file. A newcomer is subject to the repair too; this pin says to check
+	// that its elements never contain a comma or a space.
+	var sliceFlags []string
+	start.Flags().VisitAll(func(f *pflag.Flag) {
+		if _, ok := f.Value.(pflag.SliceValue); ok {
+			sliceFlags = append(sliceFlags, f.Name+":"+f.Value.Type())
+		}
+	})
+	sort.Strings(sliceFlags)
+	want := srvflags.JSONRPCAPI + ":stringSlice," + srvflags.JSONRPCWSOrigins + ":stringSlice," + sdkserver.FlagUnsafeSkipUpgrades + ":intSlice"
+	if got := strings.Join(sliceFlags, ","); got != want {
+		t.Errorf("slice flags on start: %q, want %q — a new one is subject to the app.toml repair", got, want)
 	}
 }
 

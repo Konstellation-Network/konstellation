@@ -16,16 +16,24 @@ import (
 // changed, so viper prefers it over the file. Net effect on cosmos/evm
 // v0.7.3: `ws-origins = ["127.0.0.1", "localhost"]` reaches the WebSocket
 // server as `["[127.0.0.1 localhost]"]` and every browser Origin gets a 403
-// (STATUS.md §5a P27; the SDK's own `index-events = []` becomes `["[]"]`
-// the same way). Values written as a string (`api = "eth,net,web3"`) or
-// passed on the command line are unaffected, which is why local_node.sh's
-// `--json-rpc.api` always worked.
+// (STATUS.md §5a P27). The two cosmos/evm flags `--json-rpc.api` and
+// `--json-rpc.ws-origins` are the whole affected set: they are the only
+// slice flags `start` has (SDK v0.54.3; `index-events` is read through
+// appOpts, not a flag). Values written as a string (`api = "eth,net,web3"`
+// is what the template writes) or passed on the command line are
+// unaffected, which is why local_node.sh's `--json-rpc.api` always worked.
 //
 // The two functions below undo that: record which slice flags the user
 // actually passed before the handler runs, and afterwards re-parse any
 // slice flag the handler mangled. Nothing here reads app.toml a second
 // time or changes precedence (flag > env > file > default); it only restores
 // the array the file held. Remove once upstream fixes bindFlags.
+//
+// Known limits of re-parsing the `[a b]` rendering, all irrelevant to
+// hostnames and RPC namespaces: an element containing a comma cannot be
+// repaired at all (StringSlice.Set CSV-splits before we see it, leaving
+// `["[a" "b c]"]`, which is not the one-element form); an element containing
+// a space is split in two.
 
 // sliceFlagsSetByUser returns the slice-valued flags present on the command
 // line, i.e. the ones the SDK will leave alone.
@@ -45,7 +53,10 @@ func sliceFlagsSetByUser(cmd *cobra.Command) map[string]bool {
 func repairSliceFlags(cmd *cobra.Command, userSet map[string]bool) error {
 	var err error
 	cmd.Flags().VisitAll(func(f *pflag.Flag) {
-		if err != nil || userSet[f.Name] {
+		// Only a flag the SDK's Set touched is Changed here (the user's
+		// own are in userSet); a slice flag whose *default* happens to be a
+		// single bracketed value is left alone.
+		if err != nil || userSet[f.Name] || !f.Changed {
 			return
 		}
 		sv, ok := f.Value.(pflag.SliceValue)
