@@ -28,6 +28,9 @@ import (
 //     goes through and lands on B, the next one is refused.
 //   - x/compliance/ibc: an address frozen on A cannot be funded from B — the
 //     packet is error-acked and B refunds its sender; a clean address can.
+//     And a sender frozen on B after escrowing is still refunded when the
+//     error ack arrives (the refund is a protocol flow), while it can no
+//     longer escrow anything new.
 //
 // The in-process and mock tests prove the logic; this proves the wiring:
 // that the limiter really is on x/transfer's send path and outermost on the
@@ -63,7 +66,7 @@ func TestIBCSafetyRails(t *testing.T) {
 	}))
 	t.Cleanup(func() { _ = ic.Close() })
 	a := wrapChain(ctx, t, chainA, *specA.authority)
-	_ = specB.authority // chain B needs no compliance actions in this test
+	b := wrapChain(ctx, t, chainB, *specB.authority)
 
 	chanA, err := ibc.GetTransferChannel(ctx, r, eRep, chainA.Config().ChainID, chainB.Config().ChainID)
 	require.NoError(t, err)
@@ -171,6 +174,28 @@ func TestIBCSafetyRails(t *testing.T) {
 	spent := bBefore.Sub(bAfter)
 	require.True(t, spent.LT(sdkmath.NewIntFromBigInt(oneKASH).MulRaw(2)), "no refund for the error-acked packet: spent %s", spent)
 	require.True(t, spent.GT(sdkmath.NewIntFromBigInt(oneKASH)), "clean transfer not debited: spent %s", spent)
+
+	// ── a refund to a sender frozen after escrow still lands ──────────────
+	// userB sends to frozenA again (error-acked on A) and is frozen on B
+	// before the acknowledgement is relayed. The refund is the transfer
+	// module's own completion (x/compliance/ibc.RefundMarker): it reaches
+	// the frozen account, where it stays immobile, instead of the packet
+	// failing on every relayer retry. Relaying is manual here (flush), so
+	// the ordering is exact.
+	bBefore, err = chainB.GetBalance(ctx, userB.FormattedAddress(), denom)
+	require.NoError(t, err)
+	require.NoError(t, send(chainB, chanB.ChannelID, userB, frozenA.FormattedAddress(), sdkmath.NewIntFromBigInt(oneKASH)))
+	b.emergencyFreeze(userB.FormattedAddress())
+	require.True(t, b.isFrozen(userB.FormattedAddress()))
+	flush()
+	bAfter, err = chainB.GetBalance(ctx, userB.FormattedAddress(), denom)
+	require.NoError(t, err)
+	spent = bBefore.Sub(bAfter)
+	require.True(t, spent.LT(sdkmath.NewIntFromBigInt(oneKASH)), "escrowed KASH not refunded to the since-frozen sender: spent %s", spent)
+	// Frozen, userB cannot escrow anything new.
+	err = send(chainB, chanB.ChannelID, userB, cleanA.FormattedAddress(), sdkmath.NewIntFromBigInt(oneKASH))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "address is frozen")
 }
 
 // submitProposal submits a gov v1 proposal carrying one message through the

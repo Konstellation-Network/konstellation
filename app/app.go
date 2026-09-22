@@ -393,8 +393,11 @@ func New(
 
 	// register the staking hooks
 	// NOTE: stakingKeeper above is passed by reference, so that it will contain these hooks
+	// x/distribution's AfterValidatorRemoved pays out commission as a
+	// protocol completion, so the D6 bank send restriction lets it reach a
+	// frozen withdraw address (x/compliance/keeper/restriction.go).
 	app.StakingKeeper.SetHooks(
-		stakingtypes.NewMultiStakingHooks(app.DistrKeeper.Hooks(), app.SlashingKeeper.Hooks()),
+		stakingtypes.NewMultiStakingHooks(compliancekeeper.MarkValidatorRemoval(app.DistrKeeper.Hooks()), app.SlashingKeeper.Hooks()),
 	)
 
 	app.AuthzKeeper = authzkeeper.NewKeeper(
@@ -495,6 +498,12 @@ func New(
 		authAddr,
 		protectedFromFreezing(),
 	)
+	// D6 at the bank level: every SendCoins in the chain — precompiles, IBC
+	// escrow, erc20 conversion, authz, feegrant, whatever the ante could not
+	// see — refuses a frozen sender or recipient (STATUS.md §5a P20). The
+	// restriction is shared by every copy of the bank keeper handed out
+	// above and below.
+	app.BankKeeper.AppendSendRestriction(app.ComplianceKeeper.SendRestriction)
 
 	// Cosmos EVM keepers
 	app.FeeMarketKeeper = feemarketkeeper.NewKeeper(
@@ -523,7 +532,10 @@ func New(
 		appCodec, keys[evmtypes.StoreKey], oKeys[evmtypes.ObjectKey], nonTransientKeys,
 		authtypes.NewModuleAddress(govtypes.ModuleName),
 		app.AccountKeeper,
-		app.BankKeeper,
+		// x/vm's stateDB commit writes balances with UncheckedSetBalance,
+		// outside SendCoins; this wrapper refuses that write on a frozen
+		// address (internal CALL with value, a frozen contract paying out).
+		compliancekeeper.NewEVMBankKeeper(app.BankKeeper, app.ComplianceKeeper),
 		app.StakingKeeper,
 		app.FeeMarketKeeper,
 		&app.ConsensusParamsKeeper,
@@ -583,11 +595,13 @@ func New(
 	/*
 		Create Transfer Stack
 
-		transfer stack contains (from bottom to top):
+		transfer stack contains (from top to bottom):
 			- IBC Rate Limit Middleware (x/ratelimit, §13.2)
 			- Compliance receive gate (x/compliance/ibc, §18: no IBC funding of a frozen address)
 			- IBC Callbacks Middleware (with EVM ContractKeeper)
 			- ERC-20 Middleware
+			- Compliance refund marker (x/compliance/ibc: the transfer module's own
+			  refund to a since-frozen sender is a protocol flow, nothing above it is)
 			- IBC Transfer
 
 		RecvPacket, from core IBC down to the app:
@@ -603,6 +617,9 @@ func New(
 	var transferStack porttypes.IBCModule
 
 	transferStack = transfer.NewIBCModule(app.TransferKeeper)
+	// Innermost, around the transfer module only: its refund on an error
+	// ack / timeout may reach a sender frozen since the packet was escrowed.
+	transferStack = complianceibc.NewRefundMarker(transferStack)
 	maxCallbackGas := uint64(1_000_000)
 	transferStack = erc20.NewIBCMiddleware(app.Erc20Keeper, transferStack)
 	app.CallbackKeeper = ibccallbackskeeper.NewKeeper(
@@ -622,6 +639,7 @@ func New(
 
 	var transferStackV2 ibcapi.IBCModule
 	transferStackV2 = transferv2.NewIBCModule(app.TransferKeeper)
+	transferStackV2 = complianceibc.NewRefundMarkerV2(transferStackV2)
 	transferStackV2 = erc20v2.NewIBCMiddleware(transferStackV2, app.Erc20Keeper)
 	transferStackV2 = complianceibc.NewMiddlewareV2(app.ComplianceKeeper, transferStackV2)
 	transferStackV2 = ratelimitv2.NewIBCMiddleware(app.RateLimitKeeper, transferStackV2)
@@ -934,8 +952,12 @@ func (app *KonstellationApp) setAnteHandler(txConfig client.TxConfig, maxGasWant
 	//      reject any tx that involves a frozen address (x/compliance/ante).
 	//   4. any EVM tx sending value straight to a module account or
 	//      precompile, so the refusal is explained here rather than lost at
-	//      stateDB commit (blocked_recipient.go).
-	// 1, 3 and 4 also run in the mempool pre-check (mempool.go).
+	//      stateDB commit, and any ERC-20 precompile transfer/transferFrom
+	//      naming a frozen address, so the P20 spender gets an answer
+	//      instead of a revert (blocked_recipient.go).
+	// 1, 3 and 4 also run in the mempool pre-check (mempool.go). Beyond the
+	// ante, the block list binds in the bank keeper itself
+	// (x/compliance/keeper/restriction.go).
 	inner := app.withBlockedRecipientCheck(
 		complianceante.Wrap(evmante.NewAnteHandler(options), app.appCodec, app.ComplianceKeeper),
 	)

@@ -30,6 +30,9 @@ import (
 type Keeper struct {
 	cdc          codec.BinaryCodec
 	govAuthority string
+	// govAddr is govAuthority's 20 bytes: the one sender the bank send
+	// restriction lets deposit into a frozen address (restriction.go).
+	govAddr []byte
 	// protected are addresses that may never be put on the block list:
 	// module accounts and precompiles (freezing them is meaningless and
 	// makes the precompile lie to contracts) and the governance account.
@@ -57,7 +60,8 @@ type Keeper struct {
 // app passes its module accounts and precompiles); the gov authority is
 // always included.
 func NewKeeper(cdc codec.BinaryCodec, storeService store.KVStoreService, govAuthority string, protected []string) Keeper {
-	if _, err := sdk.AccAddressFromBech32(govAuthority); err != nil {
+	govAddr, err := sdk.AccAddressFromBech32(govAuthority)
+	if err != nil {
 		panic(fmt.Errorf("compliance: invalid gov authority %q: %w", govAuthority, err))
 	}
 	prot := make(map[string]struct{}, len(protected)+1)
@@ -72,6 +76,7 @@ func NewKeeper(cdc codec.BinaryCodec, storeService store.KVStoreService, govAuth
 	k := Keeper{
 		cdc:          cdc,
 		govAuthority: govAuthority,
+		govAddr:      govAddr,
 		protected:    prot,
 		evm:          &evmRef{},
 		Params:       collections.NewItem(sb, types.ParamsKey, "params", codec.CollValue[types.Params](cdc)),
