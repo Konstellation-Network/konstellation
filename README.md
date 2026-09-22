@@ -47,6 +47,15 @@ make test-unit
 ./local_node.sh -y    # dev chain; JSON-RPC on :8545
 ```
 
+## Compliance (D6) error codes
+
+A tx touching a frozen address is refused at submission with
+`compliance/6 … address is frozen` (the mempool pre-check). If a proposer
+includes one anyway, DeliverTx reports it as `sdk/5 … address is frozen:
+insufficient funds`: fee deduction runs before the compliance decorator and
+the bank send restriction refuses the frozen fee payer first. Same cause,
+two codes; nothing is charged either way.
+
 ## Upstream watch
 
 `.github/workflows/upstream-watch.yml` runs `scripts/upstream-check.sh` four times a

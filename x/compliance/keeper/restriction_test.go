@@ -107,16 +107,26 @@ func TestSendRestrictionHonoursKillSwitch(t *testing.T) {
 	}
 }
 
-// fakeBank is the slice of the bank keeper EVMBankKeeper touches.
+// fakeBank is the slice of the bank keeper the wrappers touch.
 type fakeBank struct {
 	bankkeeper.Keeper
-	balance sdk.Coin
-	set     *sdk.Coin
+	balance   sdk.Coin
+	set       *sdk.Coin
+	delegated bool
 }
 
 func (b *fakeBank) GetBalance(context.Context, sdk.AccAddress, string) sdk.Coin { return b.balance }
 func (b *fakeBank) UncheckedSetBalance(_ context.Context, _ sdk.AccAddress, c sdk.Coin) error {
 	b.set = &c
+	return nil
+}
+
+func (b *fakeBank) DelegateCoinsFromAccountToModule(context.Context, sdk.AccAddress, string, sdk.Coins) error {
+	b.delegated = true
+	return nil
+}
+
+func (b *fakeBank) UndelegateCoinsFromModuleToAccount(context.Context, string, sdk.AccAddress, sdk.Coins) error {
 	return nil
 }
 
@@ -193,5 +203,68 @@ func TestMarkValidatorRemovalMarksOnlyThatHook(t *testing.T) {
 	}
 	if types.IsProtocolFlow(f.ctx) {
 		t.Fatal("mark leaked into the caller's context")
+	}
+}
+
+func TestEscrowAddressesCannotBeFrozen(t *testing.T) {
+	f := setup(t)
+	escrow := common.HexToAddress("0x4444444444444444444444444444444444444444")
+	if f.k.HasEscrowChecker() {
+		t.Fatal("checker set before wiring")
+	}
+	// Without the checker a plain address is freezable (unit tests).
+	if _, err := f.ms.EmergencyFreeze(f.ctx, &types.MsgEmergencyFreeze{Authority: authority, Addresses: []string{escrow.Hex()}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.ms.LiftEmergencyFreeze(f.ctx, &types.MsgLiftEmergencyFreeze{Authority: authority, Addresses: []string{escrow.Hex()}}); err != nil {
+		t.Fatal(err)
+	}
+	f.k.SetEscrowChecker(func(_ sdk.Context, addr []byte) bool { return string(addr) == string(escrow.Bytes()) })
+	if !f.k.HasEscrowChecker() {
+		t.Fatal("checker not wired")
+	}
+	// (The lift's cooldown does not matter: protection is checked first.)
+	for name, try := range map[string]func() error{
+		"emergency": func() error {
+			_, err := f.ms.EmergencyFreeze(f.ctx, &types.MsgEmergencyFreeze{Authority: authority, Addresses: []string{escrow.Hex()}})
+			return err
+		},
+		"scheduled": func() error {
+			_, err := f.ms.ScheduleUpdate(f.ctx, &types.MsgScheduleUpdate{Authority: authority, Changes: []types.Change{change(escrow, types.LIST_BLOCK, types.ACTION_ADD)}})
+			return err
+		},
+		"governance": func() error {
+			_, err := f.ms.GovUpdate(f.ctx, &types.MsgGovUpdate{Authority: gov, Changes: []types.Change{change(escrow, types.LIST_BLOCK, types.ACTION_ADD)}})
+			return err
+		},
+	} {
+		if err := try(); !types.ErrProtectedAddress.Is(err) {
+			t.Fatalf("%s freeze of an escrow account: got %v", name, err)
+		}
+	}
+	// Everything else is still freezable.
+	if _, err := f.ms.GovUpdate(f.ctx, &types.MsgGovUpdate{Authority: gov, Changes: []types.Change{change(alice, types.LIST_BLOCK, types.ACTION_ADD)}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStakingBankKeeperRefusesFrozenDelegator(t *testing.T) {
+	f := setup(t)
+	bank := &fakeBank{}
+	bk := keeper.NewStakingBankKeeper(bank, f.k)
+	f.freeze(alice)
+	err := bk.DelegateCoinsFromAccountToModule(f.ctx, alice.Bytes(), "bonded_tokens_pool", esp)
+	if !types.ErrAddressFrozen.Is(err) {
+		t.Fatalf("frozen delegator: got %v", err)
+	}
+	if bank.delegated {
+		t.Fatal("refused delegation reached the bank")
+	}
+	if err := bk.DelegateCoinsFromAccountToModule(f.ctx, bob.Bytes(), "bonded_tokens_pool", esp); err != nil || !bank.delegated {
+		t.Fatalf("clean delegator: err %v, reached %v", err, bank.delegated)
+	}
+	// Undelegation to a frozen address is a protocol completion: untouched.
+	if err := bk.UndelegateCoinsFromModuleToAccount(f.ctx, "not_bonded_tokens_pool", alice.Bytes(), esp); err != nil {
+		t.Fatalf("undelegation to a frozen delegator: %v", err)
 	}
 }

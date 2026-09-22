@@ -38,8 +38,9 @@ type Keeper struct {
 	// makes the precompile lie to contracts) and the governance account.
 	// The current list authority is protected dynamically, see isProtected.
 	protected map[string]struct{}
-	// evm is set by SetEVMKeeper after the EVM keeper exists; see delegation.go.
-	evm *evmRef
+	// late is what SetEVMKeeper / SetEscrowChecker wire after construction;
+	// see delegation.go.
+	late *late
 
 	Schema      collections.Schema
 	Params      collections.Item[types.Params]
@@ -78,7 +79,7 @@ func NewKeeper(cdc codec.BinaryCodec, storeService store.KVStoreService, govAuth
 		govAuthority: govAuthority,
 		govAddr:      govAddr,
 		protected:    prot,
-		evm:          &evmRef{},
+		late:         &late{},
 		Params:       collections.NewItem(sb, types.ParamsKey, "params", codec.CollValue[types.Params](cdc)),
 		Allow:        collections.NewMap(sb, types.AllowListKey, "allow", collections.BytesKey, codec.CollValue[types.ListEntry](cdc)),
 		Block:        collections.NewMap(sb, types.BlockListKey, "block", collections.BytesKey, codec.CollValue[types.ListEntry](cdc)),
@@ -191,9 +192,10 @@ func (k Keeper) FrozenUntilUnix(ctx sdk.Context, addr []byte) (bool, uint64) {
 }
 
 // isProtected reports whether addr may never be frozen: a module account, a
-// precompile, governance, or whoever is currently the list authority (so
+// precompile, governance, whoever is currently the list authority (so
 // the authority cannot lock itself out with a fat-fingered batch — a
-// lockout that would take a full governance cycle to undo on mainnet).
+// lockout that would take a full governance cycle to undo on mainnet), or
+// an ICS-20 escrow account (SetEscrowChecker).
 func (k Keeper) isProtected(ctx context.Context, addr []byte) bool {
 	if _, ok := k.protected[string(addr)]; ok {
 		return true
@@ -202,6 +204,9 @@ func (k Keeper) isProtected(ctx context.Context, addr []byte) bool {
 		if b, err := types.ParseAddress(a); err == nil && string(b) == string(addr) {
 			return true
 		}
+	}
+	if k.late.isEscrow != nil && k.late.isEscrow(sdk.UnwrapSDKContext(ctx), addr) {
+		return true
 	}
 	return false
 }

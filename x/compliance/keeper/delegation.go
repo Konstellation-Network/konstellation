@@ -21,19 +21,35 @@ type EVMKeeper interface {
 	DeleteCodeHash(ctx sdk.Context, addr common.Address)
 }
 
-// evmRef holds the EVM keeper behind a pointer so every copy of the Keeper
-// (module, precompile, ante) sees it once SetEVMKeeper runs. The compliance
-// keeper is built before the EVM keeper — the precompile needs it — so the
-// reference cannot be a constructor argument.
-type evmRef struct{ k EVMKeeper }
+// late holds the references wired after construction, behind a pointer so
+// every copy of the Keeper (module, precompile, ante, bank wrappers) sees
+// them once the setters run. The compliance keeper is built before the EVM
+// and IBC keepers — the precompile and the staking bank wrapper need it —
+// so these cannot be constructor arguments.
+type late struct {
+	evm EVMKeeper
+	// isEscrow reports whether addr is an ICS-20 escrow account; see
+	// SetEscrowChecker.
+	isEscrow func(ctx sdk.Context, addr []byte) bool
+}
 
 // SetEVMKeeper wires the EVM keeper. app.New always calls it; a keeper
 // without one (unit tests) leaves delegations alone.
-func (k Keeper) SetEVMKeeper(evm EVMKeeper) { k.evm.k = evm }
+func (k Keeper) SetEVMKeeper(evm EVMKeeper) { k.late.evm = evm }
 
 // HasEVMKeeper reports whether SetEVMKeeper has run. Pinned by an app test so
 // the wiring cannot be dropped silently.
-func (k Keeper) HasEVMKeeper() bool { return k.evm.k != nil }
+func (k Keeper) HasEVMKeeper() bool { return k.late.evm != nil }
+
+// SetEscrowChecker wires the test for ICS-20 escrow accounts, which join
+// the protected set: freezing one would refuse every unescrow and refund on
+// its channel (the escrow is the *sender* there, and senders are never
+// exempt) — a stuck channel until the entry is lifted, for no compliance
+// gain, since an escrow never acts on anyone's behalf (PR #15 review).
+func (k Keeper) SetEscrowChecker(fn func(ctx sdk.Context, addr []byte) bool) { k.late.isEscrow = fn }
+
+// HasEscrowChecker reports whether SetEscrowChecker has run.
+func (k Keeper) HasEscrowChecker() bool { return k.late.isEscrow != nil }
 
 // resetDelegation removes the EIP-7702 delegation on addr, if it carries
 // one, and emits the delegate it removed. Called on every path that puts an
@@ -59,20 +75,20 @@ func (k Keeper) HasEVMKeeper() bool { return k.evm.k != nil }
 // exported state's entries were frozen — and reset — on the chain that
 // exported them.
 func (k Keeper) resetDelegation(ctx context.Context, addr []byte, by string) {
-	if k.evm.k == nil {
+	if k.late.evm == nil {
 		return
 	}
 	sdkCtx := sdk.UnwrapSDKContext(ctx)
 	ethAddr := common.BytesToAddress(addr)
-	codeHash := k.evm.k.GetCodeHash(sdkCtx, ethAddr)
+	codeHash := k.late.evm.GetCodeHash(sdkCtx, ethAddr)
 	if evmtypes.IsEmptyCodeHash(codeHash.Bytes()) {
 		return
 	}
-	delegate, ok := ethtypes.ParseDelegation(k.evm.k.GetCode(sdkCtx, codeHash))
+	delegate, ok := ethtypes.ParseDelegation(k.late.evm.GetCode(sdkCtx, codeHash))
 	if !ok {
 		return
 	}
-	k.evm.k.DeleteCodeHash(sdkCtx, ethAddr)
+	k.late.evm.DeleteCodeHash(sdkCtx, ethAddr)
 	sdkCtx.EventManager().EmitEvent(sdk.NewEvent(types.EventTypeDelegationReset,
 		sdk.NewAttribute(types.AttributeKeyAddress, types.Bech32(addr)),
 		sdk.NewAttribute(types.AttributeKeyDelegate, delegate.Hex()),

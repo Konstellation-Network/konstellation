@@ -348,11 +348,28 @@ func New(
 	}
 	app.txConfig = txConfig
 
+	// D6 compliance lists. Built before every keeper that must consult
+	// them: x/staking (below), the EVM keeper and the precompiles.
+	app.ComplianceKeeper = compliancekeeper.NewKeeper(
+		appCodec,
+		runtime.NewKVStoreService(keys[compliancetypes.StoreKey]),
+		authAddr,
+		protectedFromFreezing(),
+	)
+	// D6 at the bank level: every SendCoins in the chain — precompiles, IBC
+	// escrow, erc20 conversion, authz, feegrant, whatever the ante could not
+	// see — refuses a frozen sender or recipient (STATUS.md §5a P20). The
+	// restriction is shared by every copy of the bank keeper handed out
+	// below.
+	app.BankKeeper.AppendSendRestriction(app.ComplianceKeeper.SendRestriction)
+
 	app.StakingKeeper = stakingkeeper.NewKeeper(
 		appCodec,
 		runtime.NewKVStoreService(keys[stakingtypes.StoreKey]),
 		app.AccountKeeper,
-		app.BankKeeper,
+		// DelegateCoins bypasses the send restriction; this refuses a frozen
+		// delegator (x/compliance/keeper/restriction.go).
+		compliancekeeper.NewStakingBankKeeper(app.BankKeeper, app.ComplianceKeeper),
 		authAddr,
 		evmaddress.NewEvmCodec(sdk.GetConfig().GetBech32ValidatorAddrPrefix()),
 		evmaddress.NewEvmCodec(sdk.GetConfig().GetBech32ConsensusAddrPrefix()),
@@ -395,7 +412,8 @@ func New(
 	// NOTE: stakingKeeper above is passed by reference, so that it will contain these hooks
 	// x/distribution's AfterValidatorRemoved pays out commission as a
 	// protocol completion, so the D6 bank send restriction lets it reach a
-	// frozen withdraw address (x/compliance/keeper/restriction.go).
+	// frozen withdraw address when a tx empties the validator
+	// (x/compliance/keeper/restriction.go; EndBlock is covered as a whole).
 	app.StakingKeeper.SetHooks(
 		stakingtypes.NewMultiStakingHooks(compliancekeeper.MarkValidatorRemoval(app.DistrKeeper.Hooks()), app.SlashingKeeper.Hooks()),
 	)
@@ -490,21 +508,6 @@ func New(
 	)
 	app.SetCircuitBreaker(circuitBreaker{&app.CircuitKeeper})
 
-	// D6 compliance lists. Built before the EVM keeper so the precompile can
-	// read them.
-	app.ComplianceKeeper = compliancekeeper.NewKeeper(
-		appCodec,
-		runtime.NewKVStoreService(keys[compliancetypes.StoreKey]),
-		authAddr,
-		protectedFromFreezing(),
-	)
-	// D6 at the bank level: every SendCoins in the chain — precompiles, IBC
-	// escrow, erc20 conversion, authz, feegrant, whatever the ante could not
-	// see — refuses a frozen sender or recipient (STATUS.md §5a P20). The
-	// restriction is shared by every copy of the bank keeper handed out
-	// above and below.
-	app.BankKeeper.AppendSendRestriction(app.ComplianceKeeper.SendRestriction)
-
 	// Cosmos EVM keepers
 	app.FeeMarketKeeper = feemarketkeeper.NewKeeper(
 		appCodec, authtypes.NewModuleAddress(govtypes.ModuleName),
@@ -543,7 +546,7 @@ func New(
 		evmChainID,
 		tracer,
 	).WithStaticPrecompiles(
-		withCircuitGuard(withCompliancePrecompile(
+		withCircuitGuard(withComplianceGuard(withCompliancePrecompile(
 			precompiletypes.DefaultStaticPrecompiles(
 				*app.StakingKeeper,
 				app.DistrKeeper,
@@ -557,7 +560,7 @@ func New(
 				appCodec,
 			),
 			app.ComplianceKeeper,
-		), circuitBreaker{&app.CircuitKeeper}),
+		), app.ComplianceKeeper), circuitBreaker{&app.CircuitKeeper}),
 	)
 
 	// A block-list add clears any EIP-7702 delegation on the frozen account
@@ -652,6 +655,22 @@ func New(
 
 	app.IBCKeeper.SetRouter(ibcRouter)
 	app.IBCKeeper.SetRouterV2(ibcRouterV2)
+
+	// ICS-20 escrow accounts can never be frozen: one per transfer channel
+	// (v1) and per client (v2, where the client id is the channel).
+	app.ComplianceKeeper.SetEscrowChecker(func(ctx sdk.Context, addr []byte) bool {
+		for _, ch := range app.IBCKeeper.ChannelKeeper.GetAllChannelsWithPortPrefix(ctx, ibctransfertypes.PortID) {
+			if ibctransfertypes.GetEscrowAddress(ch.PortId, ch.ChannelId).Equals(sdk.AccAddress(addr)) {
+				return true
+			}
+		}
+		escrow := false
+		app.IBCKeeper.ClientKeeper.IterateClientStates(ctx, nil, func(clientID string, _ ibcexported.ClientState) bool {
+			escrow = ibctransfertypes.GetEscrowAddress(ibctransfertypes.PortID, clientID).Equals(sdk.AccAddress(addr))
+			return escrow
+		})
+		return escrow
+	})
 
 	clientKeeper := app.IBCKeeper.ClientKeeper
 	storeProvider := app.IBCKeeper.ClientKeeper.GetStoreProvider()
@@ -993,8 +1012,15 @@ func (app *KonstellationApp) setPostHandler() {
 func (app *KonstellationApp) Name() string { return app.BaseApp.Name() }
 
 // BeginBlocker application updates every begin block
+//
+// The whole phase runs as a compliance protocol flow: a frozen address may
+// be credited by anything BeginBlock does (a slash reaching distribution's
+// reward withdrawal, say) but never debited. A refusal here would be a
+// chain halt with no tx left to lift the freeze; see
+// x/compliance/keeper/restriction.go. The mark is on this copy of the
+// context only — transactions get theirs from the finalize state, unmarked.
 func (app *KonstellationApp) BeginBlocker(ctx sdk.Context) (sdk.BeginBlock, error) {
-	return app.ModuleManager.BeginBlock(ctx)
+	return app.ModuleManager.BeginBlock(compliancetypes.WithProtocolFlow(ctx))
 }
 
 // EndBlocker application updates every end block.
@@ -1013,7 +1039,13 @@ func (app *KonstellationApp) BeginBlocker(ctx sdk.Context) (sdk.BeginBlock, erro
 // proposal executing in x/gov's EndBlocker can change feemarket params in
 // the same block, and every tx in this block was checked against the value
 // that was in force when it executed.
+//
+// Like BeginBlocker, the whole phase is a compliance protocol flow
+// (recipient exemption only): gov deposit refunds, validator removals,
+// unbonding completions and gov-executed messages may credit a frozen
+// address; nothing may debit one.
 func (app *KonstellationApp) EndBlocker(ctx sdk.Context) (sdk.EndBlock, error) {
+	ctx = compliancetypes.WithProtocolFlow(ctx)
 	burnInput := snapshotBaseFee(ctx, app.FeeMarketKeeper)
 
 	res, err := app.ModuleManager.EndBlock(ctx)

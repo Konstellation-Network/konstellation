@@ -124,6 +124,13 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
+	return newHarnessN(t, 1)
+}
+
+// newHarnessN is a chain with n validators (all with the same power, none
+// of whose operator keys the test holds).
+func newHarnessN(t *testing.T, n int) *harness {
+	t.Helper()
 	kr := testkeyring.New(4)
 	authority := kr.GetKey(0)
 
@@ -144,7 +151,7 @@ func newHarness(t *testing.T) *harness {
 
 	nw := network.NewUnitTestNetwork(create,
 		network.WithChainID(localChain),
-		network.WithAmountOfValidators(1),
+		network.WithAmountOfValidators(n),
 		network.WithPreFundedAccounts(kr.GetAllAccAddrs()...),
 	)
 	t.Cleanup(func() { _ = built.Close() })
