@@ -57,8 +57,14 @@ last real release. Mainnet only ever runs an unsuffixed version.
    ```sh
    gh release download v0.1.0 -R Konstellation-Network/konstellation
    sha256sum -c SHA256SUMS
-   gh attestation verify konstellationd-v0.1.0-linux-amd64 --owner Konstellation-Network
+   gh attestation verify konstellationd-v0.1.0-linux-amd64 \
+     --repo Konstellation-Network/konstellation \
+     --signer-workflow Konstellation-Network/konstellation/.github/workflows/release.yml
    ```
+   `--repo` + `--signer-workflow`, not `--owner`: `--owner` accepts an attestation
+   produced by any workflow in any repository of the org, so a binary built by a
+   forked or unrelated workflow would verify. The pair above pins the
+   attestation to this repository and to `release.yml` itself.
 2. Record the version, date and SHA256 in `networks/RELEASES.md` — the ledger
    operators and `infra` take checksums from (ENGINEERING.md §5.2). Nothing
    runs a binary that is not in that table.

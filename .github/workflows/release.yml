@@ -174,7 +174,9 @@ jobs:
             echo "Built twice on independent runners from signed tag \`$v\` with Go ${GO_VERSION}; both checksums matched. Verify the download with \`sha256sum -c SHA256SUMS\` and its provenance with:"
             echo
             echo '```'
-            echo "gh attestation verify konstellationd-${v}-linux-amd64 --owner ${GITHUB_REPOSITORY_OWNER}"
+            echo "gh attestation verify konstellationd-${v}-linux-amd64 \\"
+            echo "  --repo ${GITHUB_REPOSITORY} \\"
+            echo "  --signer-workflow ${GITHUB_REPOSITORY}/.github/workflows/release.yml"
             echo '```'
             echo
             echo "Record the checksum in \`networks/RELEASES.md\` (ENGINEERING.md §5.2) before any network runs it."
