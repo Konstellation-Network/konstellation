@@ -6,6 +6,16 @@ runners, publishes only if the checksums agree, attaches GitHub build
 provenance, and creates the GitHub Release with the asset and `SHA256SUMS`.
 Nothing is built by hand.
 
+The build itself runs inside `golang:1.26-bookworm` — the base the `Dockerfile`
+uses, pinned by digest rather than by tag — and the finished asset is then run
+under `debian:12` before it can be published. CGO is on (secp256k1, pebble) and nothing static-links, so the
+binary carries the build image's glibc: built on the runner's own Ubuntu it
+would link against glibc 2.39 and refuse to start on the debian-12 nodes
+`infra/terraform` provisions, at the upgrade height, on every validator at
+once. Both images are pinned in `release.yml`'s `env:`; if `infra` moves the
+fleet to another distro, move `TARGET_IMAGE` (and, if its glibc is older,
+`BUILD_IMAGE`) in the same change.
+
 ## Before tagging
 
 1. `main` is green: CI (build, unit, integration, e2e, lint) and the nightly
@@ -13,7 +23,10 @@ Nothing is built by hand.
 2. `go.mod`'s `toolchain` is the latest patch of its Go line (ENGINEERING.md
    §3), and `ci.yml`, `release.yml`, `vuln.yml` and `tests/e2e/go.mod` carry
    the same version. `curl -s 'https://go.dev/dl/?mode=json' | jq -r '.[].version'`
-   lists what is current.
+   lists what is current. `release.yml`'s `BUILD_IMAGE` digest is bumped in the
+   same change — `docker buildx imagetools inspect golang:1.26-bookworm` prints
+   the one to paste. Picking up a Debian security rebuild is the other reason
+   to bump it; nothing does it automatically, by design.
 3. If the release is a state-breaking upgrade of a running network: an
    `app/upgrades/<name>/` package with the handler and store upgrades
    (`app/upgrades/README.md`; one package per release, permanently), and the
@@ -68,7 +81,8 @@ last real release. Mainnet only ever runs an unsuffixed version.
 2. Record the version, date and SHA256 in `networks/RELEASES.md` — the ledger
    operators and `infra` take checksums from (ENGINEERING.md §5.2). Nothing
    runs a binary that is not in that table.
-3. For an upgrade: `networks/<net>/upgrades/<version>.md` from the template,
+3. For an upgrade: `networks/<net>/upgrades/v<N>-<name>.md` from the template
+   (`<name>` is the `MsgSoftwareUpgrade` plan name, not the version),
    with the same checksum; then the proposal (mainnet) or
    `infra/ansible/upgrade.yml` (testnet).
 4. `infra`: set `konstellationd_version` / `konstellationd_sha256`.
@@ -83,10 +97,16 @@ last real release. Mainnet only ever runs an unsuffixed version.
   tagger's account; `unverified_email`: the tagger email is not verified on
   that account).
 - *non-reproducible build*: the two runners produced different binaries. Do
-  not publish by hand. Re-run the workflow once first: the two builds must
-  land on the same `ubuntu-24.04` runner image, and during a GitHub image
-  rollout they can differ (CGO is on, so the system compiler is an input). If
-  it fails again, find the input that differs (a dependency resolved at build
-  time, an unpinned tool, a timestamp in the build) and fix it.
+  not publish by hand. `BUILD_IMAGE` is digest-pinned, so the build image is
+  not the cause — both runners pulled identical bytes. Look for an input that
+  is still free to move: a dependency resolved at build time, an unpinned
+  tool, a timestamp or path baked into the binary. Re-running will not fix a
+  real one, and a release must never be published by hand to get around it.
+- *build toolchain != pinned*: the image's Go and `go.mod`'s `toolchain` line
+  disagree in a way `GOTOOLCHAIN=auto` did not settle. Fix `go.mod` or
+  `BUILD_IMAGE`; do not relax the check, the release notes name that version.
+- *binary version ... != tag*, failing inside `debian:12`: if the error is a
+  missing `GLIBC_2.3x` symbol rather than a version mismatch, the build image
+  is newer than the fleet — see the note at the top of this file.
 - *vulncheck*: a reachable advisory not in `.govulncheck-allowlist`. Fix or
   justify under ENGINEERING.md §4.1.1 — in a PR, not in the release.
