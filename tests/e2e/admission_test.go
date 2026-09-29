@@ -53,7 +53,10 @@ func TestValidatorAdmissionGate(t *testing.T) {
 	// The window.
 	_, err = node.ExecTx(k.ctx, authorityKey, "circuit", "reset", createValidatorURL)
 	require.NoError(t, err)
-	_, err = node.ExecTx(k.ctx, operator, createValidator...)
+	// The refused tx consumed no sequence, so re-sending it unchanged would
+	// be byte-identical and CometBFT's tx cache answers "tx already seen".
+	// An operator re-signs with new bytes; a memo is the smallest change.
+	_, err = node.ExecTx(k.ctx, operator, append(createValidator, "--note", "admission window")...)
 	require.NoError(t, err, "create-validator refused after the super admin's reset")
 	require.Equal(t, 2, k.bondedValidators(), "admitted validator did not join the set")
 	_, err = node.ExecTx(k.ctx, authorityKey, "circuit", "disable", createValidatorURL)
