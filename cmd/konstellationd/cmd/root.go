@@ -138,7 +138,13 @@ func NewRootCmd() *cobra.Command {
 			customAppTemplate, customAppConfig := config.InitAppConfig(config.BaseDenom, config.EVMChainIDFor(chainID))
 			customTMConfig := initCometConfig()
 
-			return sdkserver.InterceptConfigsPreRunHandler(cmd, customAppTemplate, customAppConfig, customTMConfig)
+			// The SDK handler mangles TOML arrays it copies onto slice
+			// flags (flags.go); note what the user passed, then repair.
+			userSlices := sliceFlagsSetByUser(cmd)
+			if err := sdkserver.InterceptConfigsPreRunHandler(cmd, customAppTemplate, customAppConfig, customTMConfig); err != nil {
+				return err
+			}
+			return repairSliceFlags(cmd, userSlices)
 		},
 	}
 

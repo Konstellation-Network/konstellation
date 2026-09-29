@@ -810,6 +810,11 @@ func New(
 		ibctransfertypes.ModuleName,
 		genutiltypes.ModuleName, evidencetypes.ModuleName, authz.ModuleName,
 		feegrant.ModuleName, upgradetypes.ModuleName, vestingtypes.ModuleName,
+		// NOTE: circuit must stay after genutil. Gentxs are delivered through
+		// the ante chain and the message router, and D16 ships
+		// MsgCreateValidator in the circuit's genesis disable list; the launch
+		// validators exist only because that list is not yet in state when
+		// their gentxs run (pinned by TestGenesisOrderDeliversGentxsBeforeCircuit).
 		compliancetypes.ModuleName, circuittypes.ModuleName, ratelimittypes.ModuleName,
 	}
 	app.ModuleManager.SetOrderInitGenesis(genesisModuleOrder...)
@@ -1135,6 +1140,8 @@ func (app *KonstellationApp) DefaultGenesis(chainID string) map[string]json.RawM
 	genesis[evmtypes.ModuleName] = app.appCodec.MustMarshalJSON(NewEVMGenesisState())
 	genesis[erc20types.ModuleName] = app.appCodec.MustMarshalJSON(NewErc20GenesisState())
 	genesis[feemarkettypes.ModuleName] = app.appCodec.MustMarshalJSON(NewFeeMarketGenesisState())
+	// D16: MsgCreateValidator disabled from block 1 on every network (genesis.go).
+	genesis[circuittypes.ModuleName] = app.appCodec.MustMarshalJSON(NewCircuitGenesisState())
 
 	// SDK modules default to "stake"; switch them to the base denom.
 	// MaxValidators/MinCommissionRate are D10 overrides; UnbondingTime matches

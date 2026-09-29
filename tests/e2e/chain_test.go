@@ -120,6 +120,13 @@ func newChainSpec(ctx context.Context, name, cosmosChainID string, extra ...cosm
 				// Short so an emergency freeze lapses inside a test if one
 				// needs it to; x/compliance's MinTimelock is a minute.
 				cosmos.NewGenesisKV("app_state.compliance.params.timelock", "120s"),
+				// The same key is the circuit breaker's super admin, as the
+				// operations multisig is on a real network (ENGINEERING.md
+				// §18). disabled_type_urls is left as `init` wrote it (D16).
+				cosmos.NewGenesisKV("app_state.circuit.account_permissions", []map[string]any{{
+					"address":     *authority,
+					"permissions": map[string]any{"level": "LEVEL_SUPER_ADMIN", "limit_type_urls": []string{}},
+				}}),
 			}
 			return cosmos.ModifyGenesis(append(kvs, extra...))(cfg, genbz)
 		},

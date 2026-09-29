@@ -1,0 +1,266 @@
+# Release build (ENGINEERING.md §2.6, §6.1): every binary a network runs comes
+# from here — built twice on identical runners, published only when the two
+# checksums agree, with GitHub build provenance attached. Never from a laptop
+# or a validator.
+#
+# Trigger: a version tag (vX.Y.Z[-suffix]) that is signed with a key GitHub
+# verifies for the tagger and points at a commit on main. Steps to cut one
+# are in RELEASING.md. A pre-release suffix publishes a pre-release.
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.8" # go.mod's `toolchain`; keep in step with ci.yml
+  # Build on the fleet's glibc, not the runner's. BUILD_IMAGE stays the base
+  # the Dockerfile builds on; TARGET_IMAGE stays the distro infra/terraform
+  # provisions. When infra moves the fleet, move this row with it.
+  #
+  # BUILD_IMAGE is a digest, not the `golang:1.26-bookworm` tag it currently
+  # names (2026-09-23): the tag is repointed on every Go patch and Debian
+  # security rebuild, and CGO makes the image's gcc and libc build inputs. If
+  # it moved between the two matrix builds they would differ and the release
+  # would fail as "non-reproducible" with nothing actually wrong. Bump it
+  # deliberately, alongside GO_VERSION:
+  #   docker buildx imagetools inspect golang:1.26-bookworm   # take "Digest:"
+  BUILD_IMAGE: "golang@sha256:a688600ca24f8a4d3ca77f95b0dd40704a9fc787c826660eb7ba0b641b8b175d"
+  TARGET_IMAGE: "debian:12"
+
+jobs:
+  # Refuse a tag before spending a build on it unless it is a well-formed
+  # version, signed by a key GitHub can verify, and points at a commit on main.
+  tag:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Tag name is a version
+        # Strict semver with an optional pre-release suffix (v1.2.3, v1.2.3-rc1).
+        # Later steps put the name in shell and file names, so nothing else
+        # may pass, whatever `tags: ["v*"]` let through.
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          echo "$tag" | grep -Eq -- '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$' \
+            || { echo "::error::'$tag' is not a version tag (vMAJOR.MINOR.PATCH[-suffix])"; exit 1; }
+      - name: Tag is annotated and signed with a key GitHub verifies
+        # Presence of a signature block is not enough: any throwaway key
+        # produces one. GitHub checks the signature against the tagger's
+        # registered signing keys and records the verdict on the tag object.
+        #
+        # Both facts come from the API, not the workspace: on a tag push
+        # actions/checkout@v4 force-fetches +<commit>:refs/tags/<tag>, which
+        # rewrites an annotated tag into a lightweight one locally
+        # (actions/checkout#290). `git cat-file -t` would therefore reject
+        # every correctly signed tag, and `git rev-parse` would hand back the
+        # commit SHA instead of the tag object the verdict hangs on.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          obj="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '"\(.object.type) \(.object.sha)"')"
+          objtype="${obj%% *}"
+          sha="${obj##* }"
+          [ "$objtype" = "tag" ] || { echo "::error::$tag is a lightweight tag; use git tag -s"; exit 1; }
+          verdict="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" --jq '.verification | "\(.verified) \(.reason)"')"
+          echo "GitHub verification: $verdict"
+          [ "$verdict" = "true valid" ] \
+            || { echo "::error::$tag is not signed with a key registered on GitHub for the tagger ($verdict); see RELEASING.md"; exit 1; }
+      - name: Tagged commit is on main
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          git merge-base --is-ancestor "${tag}^{commit}" origin/main \
+            || { echo "::error::$tag points at $(git rev-parse --short "${tag}^{commit}"), which is not on main"; exit 1; }
+      - id: v
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+          case "$tag" in
+            *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *)   echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+  # Two independent builds of the same tag. Any difference between them is a
+  # non-determinism bug, and no release is published.
+  build:
+    needs: tag
+    strategy:
+      matrix:
+        attempt: [1, 2]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # git describe needs the tag
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      # The artifact is built inside bookworm, not on the ubuntu-24.04 host.
+      # CGO is on (secp256k1, pebble) and nothing static-links, so a host
+      # build resolves against noble's glibc 2.39 — while every node runs
+      # debian-12/glibc 2.36 (infra/terraform/modules/{hetzner,gcp}, and
+      # infra/ansible/roles/node downloads exactly this asset). Such a binary
+      # publishes green and then fails to start at the upgrade height, on
+      # every validator at once. Same base as this repo's Dockerfile.
+      #
+      # `docker run`, not a job-level `container:`: the disk cleanup above is
+      # a host step, and without it the link runs the runner out of space
+      # (ci.yml, 2026-09-20).
+      - name: Bookworm toolchain
+        run: |
+          mkdir -p "$RUNNER_TEMP/gocache" "$RUNNER_TEMP/gomodcache"
+          cat > "$RUNNER_TEMP/gobox" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -v "$GITHUB_WORKSPACE:/src" -w /src \
+            -v "$RUNNER_TEMP/gocache:/gocache" \
+            -v "$RUNNER_TEMP/gomodcache:/gomodcache" \
+            -e GOCACHE=/gocache -e GOMODCACHE=/gomodcache \
+            -e GOTOOLCHAIN=auto -e HOME=/tmp \
+            "$BUILD_IMAGE" \
+            bash -c 'git config --global --add safe.directory /src && exec "$@"' -- "$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/gobox"
+      - name: Toolchain is the pinned one
+        # GOTOOLCHAIN=auto lets go.mod's `toolchain` line win over whatever
+        # the image ships, as the Dockerfile does. Assert the result: the
+        # release notes name this version.
+        run: |
+          got="$("$RUNNER_TEMP/gobox" go version | awk '{print $3}')"
+          echo "toolchain: $got"
+          [ "$got" = "go${GO_VERSION}" ] \
+            || { echo "::error::build toolchain $got != pinned go${GO_VERSION}"; exit 1; }
+      # Stays on the host: `verify-deps` needs jq, which the golang image does
+      # not ship, and it is a policy check on go.mod — not a step that touches
+      # the artifact, so the build image is irrelevant to its verdict.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false # a warm cache is one more input; release builds start cold
+      - name: Dependency policy (ENGINEERING.md §2.2, §2.3)
+        run: make verify-deps
+      - name: Build linux-amd64
+        env:
+          V: ${{ needs.tag.outputs.version }}
+        run: |
+          "$RUNNER_TEMP/gobox" make build-linux
+          v="$V"
+          asset="konstellationd-${v}-linux-amd64"
+          mv build/konstellationd "build/$asset"
+          (cd build && sha256sum "$asset" > "$asset.sha256")
+          cat "build/$asset.sha256"
+      - name: Version string matches the tag, on the deployment target
+        # Run it in the distro the fleet runs. This is the gate: a binary
+        # linked against anything newer than the fleet's glibc dies here,
+        # not at a coordinated halt height.
+        env:
+          V: ${{ needs.tag.outputs.version }}
+        run: |
+          v="$V"
+          err="$(mktemp)"; out="$(mktemp)"
+          # stderr kept, not dropped: a loader failure ("GLIBC_2.39 not found")
+          # is the message this step exists to surface. Only the binary's own
+          # startup chatter is separated out, so it cannot land in $got.
+          docker run --rm -v "$PWD/build:/b:ro" "$TARGET_IMAGE" \
+            "/b/konstellationd-${v}-linux-amd64" version >"$out" 2>"$err" \
+            || { echo "::error::the asset does not run on ${TARGET_IMAGE}"; cat "$err"; exit 1; }
+          got="$(head -1 "$out")"
+          echo "binary reports: $got"
+          [ "$got" = "$v" ] || { echo "::error::binary version '$got' != tag '$v' (dirty tree or missing tag at build?)"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.attempt }}
+          path: build/konstellationd-*
+          if-no-files-found: error
+
+  # ENGINEERING.md §4.3: the release binary passes govulncheck, allow-list aside.
+  vulncheck:
+    needs: tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - run: make vulncheck-binary
+
+  publish:
+    needs: [tag, build, vulncheck]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the release
+      id-token: write # provenance attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dl
+      - name: Builds must be identical
+        run: |
+          a="$(cat dl/build-1/*.sha256 | awk '{print $1}')"
+          b="$(cat dl/build-2/*.sha256 | awk '{print $1}')"
+          echo "build-1: $a"; echo "build-2: $b"
+          [ "$a" = "$b" ] || { echo "::error::non-reproducible build: checksums differ"; exit 1; }
+          mkdir release && cp dl/build-1/* release/
+          (cd release && mv ./*.sha256 SHA256SUMS && cat SHA256SUMS)
+          # The checksum was computed on runner 1, before an artifact round
+          # trip; only travelling together tied it to this file. Check it
+          # against the bytes actually being published — operators and
+          # networks/RELEASES.md take SHA256SUMS at its word.
+          (cd release && sha256sum -c SHA256SUMS)
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release/konstellationd-*-linux-amd64
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ needs.tag.outputs.version }}
+          PRERELEASE: ${{ needs.tag.outputs.prerelease }}
+        run: |
+          v="$V"
+          pre=()
+          [ "$PRERELEASE" = "true" ] && pre=(--prerelease) # never becomes "Latest"
+          notes="$(mktemp)"
+          {
+            echo "## Binary"
+            echo
+            echo '```'
+            cat release/SHA256SUMS
+            echo '```'
+            echo
+            echo "Built twice on independent runners from signed tag \`$v\` with Go ${GO_VERSION}; both checksums matched. Verify the download with \`sha256sum -c SHA256SUMS\` and its provenance with:"
+            echo
+            echo '```'
+            echo "gh attestation verify konstellationd-${v}-linux-amd64 \\"
+            echo "  --repo ${GITHUB_REPOSITORY} \\"
+            echo "  --signer-workflow ${GITHUB_REPOSITORY}/.github/workflows/release.yml"
+            echo '```'
+            echo
+            echo "Record the checksum in \`networks/RELEASES.md\` (ENGINEERING.md §5.2) before any network runs it."
+          } > "$notes"
+          gh release create "$v" "${pre[@]}" \
+            --verify-tag \
+            --title "$v" \
+            --notes-file "$notes" \
+            --generate-notes \
+            release/konstellationd-"$v"-linux-amd64 release/SHA256SUMS

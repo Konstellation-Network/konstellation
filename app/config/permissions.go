@@ -26,6 +26,20 @@ import (
 //   - module accounts
 //   - Ethereum's native precompiled smart contracts
 //   - Cosmos EVM' available static precompiled contracts
+//
+// COPIES ELSEWHERE — move them in the same change (ENGINEERING.md §17):
+//   - faucet/src/blocked.ts: MODULE_ACCOUNT_NAMES (= maccPerms' keys) and
+//     PRECOMPILE_ADDRESSES (= this function's precompile set), so the faucet
+//     refuses these recipients with a clear 400 instead of an RPC error;
+//   - chain-config/src/contracts.ts: `precompiles`, the *active* set
+//     (app/genesis.go NewEVMGenesisState — this function also blocks the
+//     inert upstream addresses that genesis leaves out, chain-config does
+//     not list them).
+//
+// Neither repo can import this package; their tests re-derive what they
+// can (module addresses from the names) but cannot see an entry that was
+// never copied. A cosmos/evm bump that adds a module account or precompile
+// changes all three.
 func BlockedAddresses() map[string]bool {
 	blockedAddrs := make(map[string]bool)
 
@@ -55,7 +69,8 @@ func BlockedAddresses() map[string]bool {
 	return blockedAddrs
 }
 
-// module account permissions
+// module account permissions. The key set is copied by name in
+// faucet/src/blocked.ts MODULE_ACCOUNT_NAMES (see BlockedAddresses).
 var maccPerms = map[string][]string{
 	// Burner: the D5 base-fee burn destroys baseFee × gasUsed straight out of
 	// the collector at EndBlock (app/feeburn.go). Nothing else burns from it.

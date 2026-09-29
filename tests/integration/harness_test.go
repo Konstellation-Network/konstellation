@@ -100,13 +100,16 @@ func (a konsApp) DefaultGenesis() map[string]json.RawMessage {
 	gs.Params.AllowlistAddTimelock = complianceTimelock
 	gen[compliancetypes.ModuleName] = a.AppCodec().MustMarshalJSON(gs)
 	// The same key is the circuit breaker's super admin, the way a network
-	// genesis grants the operations multisig (ENGINEERING.md §13.1).
-	cg := circuittypes.DefaultGenesisState()
+	// genesis grants the operations multisig (ENGINEERING.md §13.1). The
+	// rest of the circuit genesis — D16's disable list — is the app's own,
+	// so these tests run against what `konstellationd init` writes.
+	var cg circuittypes.GenesisState
+	a.AppCodec().MustUnmarshalJSON(gen[circuittypes.ModuleName], &cg)
 	cg.AccountPermissions = []*circuittypes.GenesisAccountPermissions{{
 		Address:     a.authority,
 		Permissions: &circuittypes.Permissions{Level: circuittypes.Permissions_LEVEL_SUPER_ADMIN},
 	}}
-	gen[circuittypes.ModuleName] = a.AppCodec().MustMarshalJSON(cg)
+	gen[circuittypes.ModuleName] = a.AppCodec().MustMarshalJSON(&cg)
 	return gen
 }
 

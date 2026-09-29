@@ -64,6 +64,16 @@ func TestUpstreamCouplingPins(t *testing.T) {
     and, if a reader appeared, forward the call from the wrapper (STATUS.md §3).
   - x/compliance/ante extracts EIP-7702 authorities from SetCodeAuthorizations;
     confirm x/vm/keeper/state_transition.go still applies them the same way.
+  - app/genesis.go InertUpstreamPrecompiles: x/vm/types.AvailableStaticPrecompiles
+    lists addresses upstream does not implement (v0.7.3: vesting, 0x…0803 —
+    precompiles/ has no such package and DefaultStaticPrecompiles registers
+    nothing there), and marking one active makes every call to it fail. Diff
+    AvailableStaticPrecompiles against precompiles/types.DefaultStaticPrecompiles
+    on the new tag: drop what is now implemented from InertUpstreamPrecompiles
+    (activating it is a genesis/param change for running networks, not just
+    code), add anything newly listed-but-unimplemented, and update
+    chain-config and docs/contracts.md to match. tests/integration
+    TestActivePrecompilesAreServed must keep passing.
 `, got, pinnedEVM, pinnedEVM)
 	}
 }
