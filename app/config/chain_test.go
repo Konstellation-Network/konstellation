@@ -15,10 +15,14 @@ func TestValidateEVMChainID(t *testing.T) {
 		{"testnet with mainnet id", ChainIDTestnet, EVMChainIDMainnet, true},
 		{"local correct", ChainIDLocal, EVMChainIDLocal, false},
 		{"local with testnet id", ChainIDLocal, EVMChainIDTestnet, true},
+		{"devnet correct", ChainIDDevnet, EVMChainIDDevnet, false},
+		{"devnet with local id", ChainIDDevnet, EVMChainIDLocal, true},
+		{"testnet with devnet id", ChainIDTestnet, EVMChainIDDevnet, true},
 		{"unknown network with its own id", "some-other-net", 424242, false},
 		{"unknown network with local id", "some-other-net", EVMChainIDLocal, false},
 		{"unknown network with MAINNET id (replay domain)", "konstellation-staging-1", EVMChainIDMainnet, true},
 		{"unknown network with TESTNET id (replay domain)", "konstellation-staging-1", EVMChainIDTestnet, true},
+		{"unknown network with DEVNET id (replay domain)", "konstellation-staging-1", EVMChainIDDevnet, true},
 		{"empty chain-id with mainnet id", "", EVMChainIDMainnet, true},
 		{"empty chain-id with local id", "", EVMChainIDLocal, false},
 	}
@@ -57,23 +61,28 @@ func TestEVMChainIDFor(t *testing.T) {
 	if got := EVMChainIDFor(ChainIDTestnet); got != EVMChainIDTestnet {
 		t.Fatalf("testnet: got %d", got)
 	}
+	if got := EVMChainIDFor(ChainIDDevnet); got != EVMChainIDDevnet {
+		t.Fatalf("devnet: got %d", got)
+	}
 	// unknown networks must never inherit a real network's replay domain
 	if got := EVMChainIDFor("anything-else"); got != EVMChainIDLocal {
 		t.Fatalf("unknown: got %d, want local %d", got, EVMChainIDLocal)
 	}
-	if EVMChainIDLocal == EVMChainIDTestnet || EVMChainIDLocal == EVMChainIDMainnet {
-		t.Fatal("local id collides with a real network")
+	for id := range realNetworkEVMChainIDs {
+		if EVMChainIDLocal == id {
+			t.Fatal("local id collides with a real network")
+		}
 	}
 }
 
 // ENGINEERING.md §18: only the exact mainnet chain-id gets mainnet governance
-// timings; everything else — testnet-1, local, unknown, empty — is the short
+// timings; everything else — testnet-1, devnet-1, local, unknown, empty — is the short
 // testnet/dev profile. Mainnet must be named, never defaulted into.
 func TestProfileFor(t *testing.T) {
 	if got := ProfileFor(ChainIDMainnet); got.Name != MainnetProfile.Name {
 		t.Fatalf("mainnet chain-id got profile %q", got.Name)
 	}
-	for _, id := range []string{ChainIDTestnet, ChainIDLocal, "test-chain-abc123", "konstellation-2", ""} {
+	for _, id := range []string{ChainIDTestnet, ChainIDDevnet, ChainIDLocal, "test-chain-abc123", "konstellation-2", ""} {
 		if got := ProfileFor(id); got.Name != TestnetProfile.Name {
 			t.Errorf("chain-id %q got profile %q, want testnet/dev", id, got.Name)
 		}

@@ -26,11 +26,13 @@ const (
 	// Decimals: cosmos/evm supports 18-decimal gas tokens only (§3).
 	Decimals = evmtypes.EighteenDecimals
 
-	// EIP-155 ids (D1). All three verified absent from ethereum-lists/chains
-	// on 2026-09-13. Local dev nets get their own id so a tx signed for a dev
-	// chain can never replay on testnet-1.
+	// EIP-155 ids (D1). Mainnet, testnet and local verified absent from
+	// ethereum-lists/chains on 2026-09-13, devnet on 2026-09-29. Local dev
+	// nets get their own id so a tx signed for a dev chain can never replay on
+	// devnet-1 or testnet-1.
 	EVMChainIDMainnet uint64 = 5667
 	EVMChainIDTestnet uint64 = 56671
+	EVMChainIDDevnet  uint64 = 56672
 	EVMChainIDLocal   uint64 = 56670
 	// DefaultEVMChainID is what `konstellationd init` writes to app.toml for a
 	// Cosmos chain-id it does not recognise (see EVMChainIDFor).
@@ -190,9 +192,10 @@ var StakingMinCommissionRate = math.LegacyNewDecWithPrec(5, 2) // 5%
 
 // CircuitDisabledTypeURLs is x/circuit's genesis disable list (ENGINEERING.md
 // D16, decided 2026-09-20): validator admission is permissioned, so
-// MsgCreateValidator ships tripped on every network — mainnet, testnet-1 and
-// dev chains alike, because testnet rehearses the admission procedure and a
-// dev chain must show what the real networks do. The 10 launch validators are
+// MsgCreateValidator ships tripped on every network — mainnet, testnet-1,
+// devnet-1 and dev chains alike, because testnet rehearses the admission
+// procedure and a dev chain must show what the real networks do. The launch
+// validators (D7: 4 on mainnet and testnet-1, 1 on devnet-1) are
 // gentxs, which genutil delivers before the circuit module's InitGenesis has
 // written this list (app.go's genesis order; pinned by test), so they are
 // unaffected. Admitting an operator: a LEVEL_SUPER_ADMIN account resets the
@@ -215,6 +218,7 @@ var (
 const (
 	ChainIDMainnet = "konstellation-1"
 	ChainIDTestnet = "testnet-1"
+	ChainIDDevnet  = "devnet-1"
 	ChainIDLocal   = "konstellation-local-1"
 )
 
@@ -225,6 +229,7 @@ const (
 var RequiredEVMChainID = map[string]uint64{
 	ChainIDMainnet: EVMChainIDMainnet,
 	ChainIDTestnet: EVMChainIDTestnet,
+	ChainIDDevnet:  EVMChainIDDevnet,
 	ChainIDLocal:   EVMChainIDLocal,
 }
 
@@ -238,12 +243,14 @@ func EVMChainIDFor(cosmosChainID string) uint64 {
 	return DefaultEVMChainID
 }
 
-// realNetworkEVMChainIDs are the replay domains of networks that hold (or will
-// hold) real value. No chain-id other than the one that owns it may run with
-// one of these, whatever app.toml says.
+// realNetworkEVMChainIDs are the replay domains of the public networks. No
+// chain-id other than the one that owns it may run with one of these, whatever
+// app.toml says: a tx signed on a laptop chain must not replay on a network
+// other people use.
 var realNetworkEVMChainIDs = map[uint64]string{
 	EVMChainIDMainnet: ChainIDMainnet,
 	EVMChainIDTestnet: ChainIDTestnet,
+	EVMChainIDDevnet:  ChainIDDevnet,
 }
 
 // ValidateEVMChainID enforces the pairing in both directions:
@@ -269,7 +276,7 @@ func ValidateEVMChainID(cosmosChainID string, evmChainID uint64) error {
 	return nil
 }
 
-// IsRealNetworkEVMChainID reports whether id belongs to mainnet or testnet.
+// IsRealNetworkEVMChainID reports whether id belongs to mainnet, testnet or devnet.
 func IsRealNetworkEVMChainID(id uint64) bool {
 	_, ok := realNetworkEVMChainIDs[id]
 	return ok
