@@ -2,6 +2,10 @@ package config
 
 import "testing"
 
+// stagingChainID is an unknown network that must never borrow a real one's
+// replay domain.
+const stagingChainID = "konstellation-staging-1"
+
 func TestValidateEVMChainID(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -20,9 +24,9 @@ func TestValidateEVMChainID(t *testing.T) {
 		{"testnet with devnet id", ChainIDTestnet, EVMChainIDDevnet, true},
 		{"unknown network with its own id", "some-other-net", 424242, false},
 		{"unknown network with local id", "some-other-net", EVMChainIDLocal, false},
-		{"unknown network with MAINNET id (replay domain)", "konstellation-staging-1", EVMChainIDMainnet, true},
-		{"unknown network with TESTNET id (replay domain)", "konstellation-staging-1", EVMChainIDTestnet, true},
-		{"unknown network with DEVNET id (replay domain)", "konstellation-staging-1", EVMChainIDDevnet, true},
+		{"unknown network with MAINNET id (replay domain)", stagingChainID, EVMChainIDMainnet, true},
+		{"unknown network with TESTNET id (replay domain)", stagingChainID, EVMChainIDTestnet, true},
+		{"unknown network with DEVNET id (replay domain)", stagingChainID, EVMChainIDDevnet, true},
 		{"empty chain-id with mainnet id", "", EVMChainIDMainnet, true},
 		{"empty chain-id with local id", "", EVMChainIDLocal, false},
 	}
