@@ -38,7 +38,7 @@ var MainnetProfile = NetworkProfile{
 	GovExpeditedMinDeposit:   GovExpeditedMinDeposit,
 }
 
-// TestnetProfile is testnet-1 and every dev/local chain-id.
+// TestnetProfile is testnet-1, devnet-1 and every dev/local chain-id.
 var TestnetProfile = NetworkProfile{
 	Name:                     "testnet/dev",
 	GovVotingPeriod:          2 * time.Hour,
@@ -48,7 +48,7 @@ var TestnetProfile = NetworkProfile{
 }
 
 // ProfileFor picks the profile for a Cosmos chain-id. Only the exact mainnet
-// chain-id gets mainnet values; testnet-1, the local dev id and anything
+// chain-id gets mainnet values; testnet-1, devnet-1, the local dev id and anything
 // unrecognised get the testnet profile. The asymmetry is deliberate: a dev net
 // accidentally running 3-day governance is an inconvenience, a mainnet
 // accidentally running 2-hour governance is not, so mainnet must be named.

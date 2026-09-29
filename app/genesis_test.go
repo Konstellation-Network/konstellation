@@ -112,7 +112,7 @@ func TestCircuitGenesisDisablesCreateValidator(t *testing.T) {
 func TestDefaultGenesisDisablesCreateValidatorOnEveryNetwork(t *testing.T) {
 	a := testApp(t)
 	createValidator := sdk.MsgTypeURL(&stakingtypes.MsgCreateValidator{})
-	for _, chainID := range []string{config.ChainIDMainnet, config.ChainIDTestnet, config.ChainIDLocal, "test-chain-xyz", ""} {
+	for _, chainID := range []string{config.ChainIDMainnet, config.ChainIDTestnet, config.ChainIDDevnet, config.ChainIDLocal, "test-chain-xyz", ""} {
 		raw, ok := a.DefaultGenesis(chainID)[circuittypes.ModuleName]
 		if !ok {
 			t.Fatalf("%q: no circuit genesis", chainID)
