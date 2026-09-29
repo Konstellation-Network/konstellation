@@ -4,7 +4,19 @@
 // packet is none of those, so without this a frozen address could still be
 // funded from another chain. A packet to a frozen receiver is answered with
 // an error acknowledgement and the counterparty refunds its sender. Sends
-// need nothing here: the sender signed a MsgTransfer, which the ante checks.
+// need nothing here: the sender signed a MsgTransfer, which the ante checks,
+// and the escrow itself is a bank send the send restriction refuses
+// (keeper/restriction.go) — so a contract calling the ICS20 precompile on a
+// frozen address's behalf is stopped too.
+//
+// The second middleware here, RefundMarker, sits directly above the
+// transfer module and marks its acknowledgement and timeout callbacks as a
+// protocol flow (types.WithProtocolFlow), so the refund of a packet the
+// sender escrowed *before* being frozen still lands: the funds go back to an
+// account that cannot spend them, instead of the packet failing every
+// relayer retry until the freeze is lifted. Nothing else runs under the
+// mark — the erc20 middleware's re-conversion and the callbacks middleware's
+// contract calls sit above it and are gated as usual.
 package ibc
 
 import (
@@ -77,6 +89,34 @@ func (m *Middleware) OnRecvPacket(ctx sdk.Context, channelVersion string, packet
 	return m.app.OnRecvPacket(ctx, channelVersion, packet, relayer)
 }
 
+// RefundMarker wraps the transfer module (and only that: place it innermost)
+// so its OnAcknowledgementPacket / OnTimeoutPacket run as a protocol flow.
+type RefundMarker struct {
+	*evmibc.Module
+	app porttypes.IBCModule
+}
+
+var _ porttypes.IBCModule = &RefundMarker{}
+
+// NewRefundMarker wraps app.
+func NewRefundMarker(app porttypes.IBCModule) *RefundMarker {
+	if app == nil {
+		panic(errors.New("underlying application cannot be nil"))
+	}
+	return &RefundMarker{Module: evmibc.NewModule(app), app: app}
+}
+
+// OnAcknowledgementPacket runs the transfer module's refund (on an error
+// acknowledgement) as a protocol flow.
+func (m *RefundMarker) OnAcknowledgementPacket(ctx sdk.Context, channelVersion string, packet channeltypes.Packet, acknowledgement []byte, relayer sdk.AccAddress) error {
+	return m.app.OnAcknowledgementPacket(comptypes.WithProtocolFlow(ctx), channelVersion, packet, acknowledgement, relayer)
+}
+
+// OnTimeoutPacket runs the transfer module's refund as a protocol flow.
+func (m *RefundMarker) OnTimeoutPacket(ctx sdk.Context, channelVersion string, packet channeltypes.Packet, relayer sdk.AccAddress) error {
+	return m.app.OnTimeoutPacket(comptypes.WithProtocolFlow(ctx), channelVersion, packet, relayer)
+}
+
 // ── v2 ────────────────────────────────────────────────────────────────────
 
 var _ ibcapi.IBCModule = &MiddlewareV2{}
@@ -115,4 +155,37 @@ func (m *MiddlewareV2) OnAcknowledgementPacket(ctx sdk.Context, sourceClient, de
 
 func (m *MiddlewareV2) OnTimeoutPacket(ctx sdk.Context, sourceClient, destinationClient string, sequence uint64, payload channeltypesv2.Payload, relayer sdk.AccAddress) error {
 	return m.app.OnTimeoutPacket(ctx, sourceClient, destinationClient, sequence, payload, relayer)
+}
+
+// RefundMarkerV2 is RefundMarker for ICS-20 over IBC v2.
+type RefundMarkerV2 struct {
+	app ibcapi.IBCModule
+}
+
+var _ ibcapi.IBCModule = &RefundMarkerV2{}
+
+// NewRefundMarkerV2 wraps app.
+func NewRefundMarkerV2(app ibcapi.IBCModule) *RefundMarkerV2 {
+	if app == nil {
+		panic(errors.New("underlying application cannot be nil"))
+	}
+	return &RefundMarkerV2{app: app}
+}
+
+func (m *RefundMarkerV2) OnSendPacket(ctx sdk.Context, sourceClient, destinationClient string, sequence uint64, payload channeltypesv2.Payload, signer sdk.AccAddress) error {
+	return m.app.OnSendPacket(ctx, sourceClient, destinationClient, sequence, payload, signer)
+}
+
+func (m *RefundMarkerV2) OnRecvPacket(ctx sdk.Context, sourceClient, destinationClient string, sequence uint64, payload channeltypesv2.Payload, relayer sdk.AccAddress) channeltypesv2.RecvPacketResult {
+	return m.app.OnRecvPacket(ctx, sourceClient, destinationClient, sequence, payload, relayer)
+}
+
+// OnAcknowledgementPacket runs the refund as a protocol flow.
+func (m *RefundMarkerV2) OnAcknowledgementPacket(ctx sdk.Context, sourceClient, destinationClient string, sequence uint64, acknowledgement []byte, payload channeltypesv2.Payload, relayer sdk.AccAddress) error {
+	return m.app.OnAcknowledgementPacket(comptypes.WithProtocolFlow(ctx), sourceClient, destinationClient, sequence, acknowledgement, payload, relayer)
+}
+
+// OnTimeoutPacket runs the refund as a protocol flow.
+func (m *RefundMarkerV2) OnTimeoutPacket(ctx sdk.Context, sourceClient, destinationClient string, sequence uint64, payload channeltypesv2.Payload, relayer sdk.AccAddress) error {
+	return m.app.OnTimeoutPacket(comptypes.WithProtocolFlow(ctx), sourceClient, destinationClient, sequence, payload, relayer)
 }

@@ -89,7 +89,8 @@ func (app *KonstellationApp) configureEVMMempool(appOpts servertypes.AppOptions,
 }
 
 // Synchronous mempool pre-check: the circuit breaker, the D6 freeze check
-// and the blocked-recipient check (blocked_recipient.go), against the latest
+// and the recipient checks (blocked_recipient.go: module accounts, and
+// ERC-20 precompile transfers naming a frozen address), against the latest
 // committed state, at every submission entry point.
 //
 // The authoritative checks are in the ante handler. The EVM mempool only
@@ -129,7 +130,7 @@ func (app *KonstellationApp) mempoolPreCheck(tx sdk.Tx) error {
 	if err := complianceante.Check(ctx, app.appCodec, app.ComplianceKeeper, tx); err != nil {
 		return err
 	}
-	return app.checkBlockedRecipient(ctx, tx)
+	return app.checkEVMRecipients(ctx, tx)
 }
 
 const (

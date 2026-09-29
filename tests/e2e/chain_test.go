@@ -257,6 +257,25 @@ func (k *konsChain) signedTransfer(from evmAccount, to common.Address, amount *b
 	return signed
 }
 
+// signedCall builds a signed EIP-1559 contract call.
+func (k *konsChain) signedCall(from evmAccount, to common.Address, data []byte, gas uint64) *ethtypes.Transaction {
+	k.t.Helper()
+	nonce, err := k.eth.PendingNonceAt(k.ctx, from.addr)
+	require.NoError(k.t, err)
+	tip, err := k.eth.SuggestGasTipCap(k.ctx)
+	require.NoError(k.t, err)
+	head, err := k.eth.HeaderByNumber(k.ctx, nil)
+	require.NoError(k.t, err)
+	feeCap := new(big.Int).Add(tip, new(big.Int).Mul(head.BaseFee, big.NewInt(2)))
+	tx := ethtypes.NewTx(&ethtypes.DynamicFeeTx{
+		ChainID: big.NewInt(evmChainID), Nonce: nonce, GasTipCap: tip, GasFeeCap: feeCap,
+		Gas: gas, To: &to, Data: data,
+	})
+	signed, err := ethtypes.SignTx(tx, ethtypes.LatestSignerForChainID(big.NewInt(evmChainID)), from.priv)
+	require.NoError(k.t, err)
+	return signed
+}
+
 // send submits over eth_sendRawTransaction and returns the node's immediate
 // answer — nil when the mempool accepted it.
 func (k *konsChain) send(tx *ethtypes.Transaction) error {

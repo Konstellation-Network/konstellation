@@ -12,13 +12,16 @@
 //     erc20 convert receivers, distribution withdraw-address changes, and the
 //     `to` of an EVM transaction.
 //
-// What it cannot see: value moved inside EVM execution (an ERC-20 transfer
-// to a frozen address made by a contract call, an internal call). That is
-// what the compliance precompile is for — contracts that must not serve a
-// frozen address call isFrozen() themselves. Freezing an EOA therefore
-// guarantees it can never sign again — neither a transaction nor a 7702
-// authorization — and can never be the direct recipient of a native
-// transfer; it does not guarantee no token ever reaches it. A 7702
+// What it cannot see: value moved inside EVM execution (a precompile or
+// internal call made by a contract). Native KASH on those paths is stopped
+// by the bank keeper itself — the send restriction and x/vm balance guard
+// in keeper/restriction.go — so a frozen address can neither be debited
+// nor credited in KASH by anything, whoever signed. Solidity ERC-20
+// balances are contract storage, not bank balance, and stay out of reach;
+// that is what the compliance precompile is for — contracts that must not
+// serve a frozen address call isFrozen() themselves. Freezing an EOA
+// therefore guarantees it can never sign again — neither a transaction nor
+// a 7702 authorization — and that its KASH does not move. A 7702
 // delegation installed *before* the freeze would let an internal call still
 // run code at the frozen address; the keeper clears it at freeze time
 // (keeper/delegation.go), and this check keeps a new one from landing.
