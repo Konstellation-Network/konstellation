@@ -16,6 +16,7 @@ import (
 	sdkmath "cosmossdk.io/math"
 
 	circuittypes "github.com/cosmos/cosmos-sdk/contrib/x/circuit/types"
+	"github.com/cosmos/cosmos-sdk/crypto/keys/ed25519"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/x/authz"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
@@ -191,4 +192,97 @@ func TestCircuitBreakerCannotWeldItselfShut(t *testing.T) {
 		require.NoError(t, err)
 		require.NotZero(t, res.Code, url)
 	}
+}
+
+// TestValidatorAdmissionWindow is ENGINEERING.md D16 end to end: genesis
+// ships /cosmos.staking.v1beta1.MsgCreateValidator in x/circuit's disable
+// list, so an operator's create-validator is refused at the mempool and in
+// a block; the super admin (the 3-of-5 operations multisig on a real
+// network) resets the breaker, the operator's tx lands and the validator
+// enters the set, the admin trips it again and the door is shut — the
+// procedure in infra/runbooks/validator-admission.md. The launch validators
+// are unaffected because they exist before the list is written (gentxs run
+// first; app/genesis_test.go pins the order).
+func TestValidatorAdmissionWindow(t *testing.T) {
+	h := newHarness(t)
+	admin, operator := h.authority, h.key(1)
+	createURL := sdk.MsgTypeURL(&stakingtypes.MsgCreateValidator{})
+	refusal := "circuit breaker disables " + createURL + ": unauthorized"
+
+	// Straight from genesis: disabled, and it is the genesis that says so.
+	allowed, err := h.app.CircuitKeeper.IsAllowed(h.ctx(), createURL)
+	require.NoError(t, err)
+	require.False(t, allowed, "MsgCreateValidator is not disabled at genesis (D16)")
+	// bonded is the active set as the staking keeper sees it after the last
+	// EndBlock (the harness's own validator list is static).
+	bonded := func() int {
+		vals, err := h.app.StakingKeeper.GetLastValidators(h.ctx())
+		require.NoError(t, err)
+		return len(vals)
+	}
+	launchSet := bonded()
+	require.Equal(t, 1, launchSet, "the launch validator (genesis) must be in the set despite the disable list")
+
+	createValidator, err := stakingtypes.NewMsgCreateValidator(
+		sdk.ValAddress(operator.AccAddr).String(), ed25519.GenPrivKey().PubKey(),
+		sdk.NewCoin(config.BaseDenom, sdkmath.NewIntFromBigInt(oneKASH)),
+		stakingtypes.NewDescription("operator", "", "", "", ""),
+		stakingtypes.NewCommissionRates(config.StakingMinCommissionRate, sdkmath.LegacyNewDecWithPrec(2, 1), sdkmath.LegacyNewDecWithPrec(1, 2)),
+		sdkmath.OneInt(),
+	)
+	require.NoError(t, err)
+
+	// Refused at admission with the exact reason, and at delivery.
+	chk := h.checkTxCosmos(operator, createValidator)
+	require.NotZero(t, chk.Code, "create-validator admitted to the mempool")
+	require.Contains(t, chk.Log, refusal)
+	res, err := h.sendCosmos(operator, createValidator)
+	require.NoError(t, err)
+	require.NotZero(t, res.Code, "create-validator executed while disabled")
+	require.Contains(t, res.Log, refusal)
+	require.Equal(t, launchSet, bonded())
+
+	// The window: reset → create → disable again.
+	res, err = h.sendCosmos(admin, &circuittypes.MsgResetCircuitBreaker{
+		Authority: admin.AccAddr.String(), MsgTypeUrls: []string{createURL},
+	})
+	require.NoError(t, err)
+	require.Zero(t, res.Code, res.Log)
+	res, err = h.sendCosmos(operator, createValidator)
+	require.NoError(t, err)
+	require.Zero(t, res.Code, res.Log)
+	// It enters the active set: 20 of the 30 seats are empty and 1 KASH is
+	// one unit of power (D16's note on the window), so this is expected —
+	// and harmless against the stake bonded at genesis.
+	require.Equal(t, launchSet+1, bonded(), "admitted validator did not enter the set")
+
+	res, err = h.sendCosmos(admin, &circuittypes.MsgTripCircuitBreaker{
+		Authority: admin.AccAddr.String(), MsgTypeUrls: []string{createURL},
+	})
+	require.NoError(t, err)
+	require.Zero(t, res.Code, res.Log)
+
+	// Shut again: the next operator is refused exactly as the first was.
+	next, err := stakingtypes.NewMsgCreateValidator(
+		sdk.ValAddress(h.key(2).AccAddr).String(), ed25519.GenPrivKey().PubKey(),
+		sdk.NewCoin(config.BaseDenom, sdkmath.NewIntFromBigInt(oneKASH)),
+		stakingtypes.NewDescription("next", "", "", "", ""),
+		stakingtypes.NewCommissionRates(config.StakingMinCommissionRate, sdkmath.LegacyNewDecWithPrec(2, 1), sdkmath.LegacyNewDecWithPrec(1, 2)),
+		sdkmath.OneInt(),
+	)
+	require.NoError(t, err)
+	chk = h.checkTxCosmos(h.key(2), next)
+	require.NotZero(t, chk.Code)
+	require.Contains(t, chk.Log, refusal)
+	require.Equal(t, launchSet+1, bonded())
+
+	// The admitted validator keeps working: delegation is open (D7 —
+	// "permissioned" is who may validate, not who may delegate).
+	res, err = h.sendCosmos(h.key(3), &stakingtypes.MsgDelegate{
+		DelegatorAddress: h.key(3).AccAddr.String(),
+		ValidatorAddress: sdk.ValAddress(operator.AccAddr).String(),
+		Amount:           sdk.NewCoin(config.BaseDenom, sdkmath.NewIntFromBigInt(oneKASH)),
+	})
+	require.NoError(t, err)
+	require.Zero(t, res.Code, res.Log)
 }

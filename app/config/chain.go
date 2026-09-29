@@ -11,6 +11,7 @@ import (
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
+	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 )
 
 // Chain identity. Every value here is recorded as a decision in ENGINEERING.md
@@ -186,6 +187,19 @@ const (
 // no validator may advertise less, so delegation can't race to the bottom on
 // subsidized 0% offers.
 var StakingMinCommissionRate = math.LegacyNewDecWithPrec(5, 2) // 5%
+
+// CircuitDisabledTypeURLs is x/circuit's genesis disable list (ENGINEERING.md
+// D16, decided 2026-09-20): validator admission is permissioned, so
+// MsgCreateValidator ships tripped on every network — mainnet, testnet-1 and
+// dev chains alike, because testnet rehearses the admission procedure and a
+// dev chain must show what the real networks do. The 10 launch validators are
+// gentxs, which genutil delivers before the circuit module's InitGenesis has
+// written this list (app.go's genesis order; pinned by test), so they are
+// unaffected. Admitting an operator: a LEVEL_SUPER_ADMIN account resets the
+// breaker for this URL, the operator submits MsgCreateValidator, the admin
+// trips it again (infra/runbooks/validator-admission.md). Going permissionless
+// is a governance MsgResetCircuitBreaker, permanently.
+var CircuitDisabledTypeURLs = []string{sdk.MsgTypeURL(&stakingtypes.MsgCreateValidator{})}
 
 // Slashing params (ENGINEERING.md D10, decided 2026-09-14).
 // SlashFractionDoubleSign matches the SDK default (5%) but is set explicitly

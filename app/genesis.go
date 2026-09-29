@@ -10,6 +10,7 @@ import (
 
 	"cosmossdk.io/math"
 
+	circuittypes "github.com/cosmos/cosmos-sdk/contrib/x/circuit/types"
 	minttypes "github.com/cosmos/cosmos-sdk/x/mint/types"
 
 	"github.com/Konstellation-Network/konstellation/app/config"
@@ -26,11 +27,23 @@ import (
 // object provided to it during init.
 type GenesisState map[string]json.RawMessage
 
+// InertUpstreamPrecompiles are addresses cosmos/evm lists in
+// AvailableStaticPrecompiles without shipping an implementation: nothing is
+// registered for them in DefaultStaticPrecompiles, so marking one active makes
+// every call to it panic in the keeper ("precompiled contract not stored in
+// memory" through eth_call, a failed tx on-chain). v0.7.3: the vesting
+// precompile at 0x…0803 (STATUS.md §5a P24). They are left out of the active
+// list; TestActivePrecompilesAreServed (tests/integration) proves every
+// active address answers, and app/upstream_pin_test.go says to re-check this
+// list on every cosmos/evm bump. chain-config and docs must agree with it.
+var InertUpstreamPrecompiles = []string{evmtypes.VestingPrecompileAddress}
+
 // NewEVMGenesisState returns the default genesis state for the EVM module.
 //
 // Sets the base denom (native 18 decimals, so extended denom == base denom and
-// x/precisebank is not involved), enables all static precompiles (cosmos/evm's
-// plus the compliance precompile at 0x…0900), and installs
+// x/precisebank is not involved), enables the static precompiles cosmos/evm
+// actually implements (AvailableStaticPrecompiles minus
+// InertUpstreamPrecompiles) plus the compliance precompile at 0x…0900, and installs
 // the upstream default preinstalls (Create2 factory, Multicall3, Permit2, Safe
 // singleton factory, EIP-2935) plus Konstellation's own: ERC-4337 EntryPoint
 // v0.7 and v0.8 (each with the SenderCreator its bytecode hard-references) and
@@ -41,9 +54,13 @@ func NewEVMGenesisState() *evmtypes.GenesisState {
 	evmGenState := evmtypes.DefaultGenesisState()
 	evmGenState.Params.EvmDenom = config.BaseDenom
 	evmGenState.Params.ExtendedDenomOptions = &evmtypes.ExtendedDenomOptions{ExtendedDenom: config.BaseDenom}
-	// cosmos/evm's static precompiles plus Konstellation's compliance
-	// precompile (D6). x/vm requires the list sorted.
-	active := append(slices.Clone(evmtypes.AvailableStaticPrecompiles), complianceprecompile.Address)
+	// cosmos/evm's static precompiles, minus the ones it does not implement,
+	// plus Konstellation's compliance precompile (D6). x/vm requires the
+	// list sorted.
+	active := slices.DeleteFunc(slices.Clone(evmtypes.AvailableStaticPrecompiles), func(addr string) bool {
+		return slices.Contains(InertUpstreamPrecompiles, addr)
+	})
+	active = append(active, complianceprecompile.Address)
 	slices.Sort(active)
 	evmGenState.Params.ActiveStaticPrecompiles = active
 
@@ -102,4 +119,18 @@ func NewFeeMarketGenesisState() *feemarkettypes.GenesisState {
 	feeMarketGenState.Params.MinGasPrice = config.FeeMarketMinGasPrice
 
 	return feeMarketGenState
+}
+
+// NewCircuitGenesisState returns the default genesis state for the circuit
+// breaker (ENGINEERING.md §13.1, D14): no permissions — the super admin (the
+// 3-of-5 operations multisig on a real network, the validator key on a dev
+// chain) is written into networks/<net>/genesis.json, never into code — and
+// D16's disable list, so MsgCreateValidator is refused from block 1 on every
+// network (config.CircuitDisabledTypeURLs). Nothing protected can be listed:
+// app/circuit.go ignores the breaker's own and governance's messages whatever
+// the list says, so this can never weld the reset shut.
+func NewCircuitGenesisState() *circuittypes.GenesisState {
+	gs := circuittypes.DefaultGenesisState()
+	gs.DisabledTypeUrls = slices.Clone(config.CircuitDisabledTypeURLs)
+	return gs
 }
