@@ -1,0 +1,476 @@
+# release.yml: build, sign and publish a release (ENGINEERING.md §2.6, §6.1).
+#
+# What it does:
+#   Every binary a network runs comes from here.
+#   Never from a laptop or a validator.
+#   For a version tag it:
+#     1. Checks the tag. It must be a proper version, signed, and on main.
+#     2. Builds the binary twice, on two separate machines.
+#        It then runs it on the same Linux the validators use.
+#     3. Scans the binary for vulnerabilities.
+#     4. Compares the two builds. They must be byte-for-byte identical.
+#        Then it signs the binary with Sigstore.
+#        Then it creates the GitHub Release.
+#   How to cut a release: see RELEASING.md.
+#   A tag with a suffix (v1.2.0-rc1) becomes a pre-release.
+#
+# When it runs:
+#   Only when vuln.yml starts it.
+#   That happens for a version tag, after ci.yml and the binary scan pass.
+#   On scheduled runs it does no work. It just starts upstream-watch.yml.
+#   The job filters at the bottom keep release jobs off branches.
+#
+# How the four files connect:
+#
+#   ci.yml ──► vuln.yml ──► release.yml ──► upstream-watch.yml
+#
+#   Each file ends with a small `next` job.
+#   It runs once the file's own jobs pass.
+#   It calls the CircleCI API to start the next file.
+#   It uses the same branch or tag, and passes on `mode`.
+#   If anything fails, the chain stops there.
+#   `mode` tells each file what kind of run this is:
+#
+#   mode      started by                  ci      vuln     release  upstream-watch
+#   ""        push / pull request         runs    binary   -        -
+#   ""        tag push                    runs    binary   runs     -
+#   nightly   schedule 17 3 * * * UTC     skip    source   skip     runs
+#   watch     schedule 23 */6 * * * UTC   skip    skip     skip     runs
+#
+#   "skip": the file does no work. It just starts the next one.
+#   "-": the chain stopped before this file.
+#
+# Secrets it needs (CircleCI contexts):
+#   konstellation-github   GH_TOKEN. Reads this repo, for the tag checks.
+#   konstellation-release  GH_TOKEN. Creates releases in this repo.
+#                          Only release-publish uses it.
+#                          Limit it to tag pipelines and a release group.
+#   konstellation-chain    see ci.yml.
+version: 2.1
+
+parameters:
+  # What kind of run this is. See the table above.
+  # The ci schedules set it. Each `next` job passes it on.
+  # Empty for a push, pull request or tag.
+  mode:
+    type: string
+    default: ""
+
+# Where jobs run.
+executors:
+  # A Docker container with Go already installed. Enough for most jobs.
+  go:
+    docker:
+      # Same Go version as go.mod's `toolchain` line.
+      # app/upstream_pin_test.go fails if they drift apart.
+      - image: cimg/go:1.26.8
+    resource_class: large
+  # A full virtual machine with its own Docker.
+  # For jobs that start their own containers (e2e tests, release build).
+  machine:
+    machine:
+      image: ubuntu-2404:current
+    resource_class: large
+
+# Reusable steps, shared by the jobs below.
+commands:
+  # Start the next file's pipeline.
+  # Same branch or tag, same `mode`.
+  # The konstellation-chain context gives the token and pipeline IDs.
+  # If one is missing, the step fails and names it.
+  start-pipeline:
+    parameters:
+      pipeline:
+        type: string
+      definition-env:
+        type: env_var_name
+    steps:
+      - run:
+          name: Start the << parameters.pipeline >> pipeline
+          command: |
+            def="${<< parameters.definition-env >>:?not set; add it to the konstellation-chain context}"
+            if [ -n "${CIRCLE_TAG:-}" ]; then
+              ref="$(jq -n --arg t "$CIRCLE_TAG" '{tag: $t}')"
+            else
+              ref="$(jq -n --arg b "$CIRCLE_BRANCH" '{branch: $b}')"
+            fi
+            jq -n --arg d "$def" --argjson ref "$ref" --arg mode "<< pipeline.parameters.mode >>" \
+              '{definition_id: $d, config: $ref, checkout: $ref, parameters: {mode: $mode}}' > /tmp/next.json
+            cat /tmp/next.json
+            curl -fsS -X POST "https://circleci.com/api/v2/project/<< pipeline.project.slug >>/pipeline/run" \
+              -H "Circle-Token: ${CIRCLE_TOKEN:?not set; add it to the konstellation-chain context}" \
+              -H "content-type: application/json" \
+              --data @/tmp/next.json
+
+  # Machine images ship some Go, maybe not ours.
+  # Install exactly $GO_VERSION, set in the job's environment.
+  # The download is checked against go.dev's published sha256.
+  install-go:
+    steps:
+      - run:
+          name: Install Go ${GO_VERSION}
+          command: |
+            f="go${GO_VERSION}.linux-amd64.tar.gz"
+            sha="$(curl -fsSL 'https://go.dev/dl/?mode=json&include=all' | jq -r --arg f "$f" '.[].files[] | select(.filename == $f) | .sha256')"
+            [ -n "$sha" ] || { echo "ERROR: no published sha256 for $f"; exit 1; }
+            curl -fsSLo "/tmp/$f" "https://go.dev/dl/$f"
+            echo "$sha  /tmp/$f" | sha256sum -c -
+            sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf "/tmp/$f"
+            echo 'export PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"' >> "$BASH_ENV"
+            /usr/local/go/bin/go version
+
+  # The GitHub CLI. Used to read tags and open issues and releases.
+  # A fixed version, checked against its published checksums.
+  install-gh:
+    steps:
+      - run:
+          name: Install GitHub CLI
+          command: |
+            v=2.102.0
+            cd /tmp
+            curl -fsSLO "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_linux_amd64.tar.gz"
+            curl -fsSLO "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_checksums.txt"
+            grep " gh_${v}_linux_amd64.tar.gz\$" "gh_${v}_checksums.txt" | sha256sum -c -
+            tar -xzf "gh_${v}_linux_amd64.tar.gz"
+            sudo install "gh_${v}_linux_amd64/bin/gh" /usr/local/bin/gh
+            # Name the repo explicitly. Don't let gh guess it.
+            echo "export GH_REPO=${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}" >> "$BASH_ENV"
+            gh --version
+
+  # Reuse Go modules and compiled packages from earlier runs.
+  # The cache is keyed on go.sum.
+  # A dependency change starts a fresh cache.
+  restore-go-cache:
+    parameters:
+      sum:
+        type: string
+        default: go.sum
+    steps:
+      - restore_cache:
+          keys:
+            - go-v1-{{ arch }}-{{ checksum "<< parameters.sum >>" }}-{{ .Environment.CIRCLE_JOB }}
+            - go-v1-{{ arch }}-{{ checksum "<< parameters.sum >>" }}-
+
+jobs:
+  # The link to the next file in the chain.
+  # It only calls the CircleCI API, so the smallest container is enough.
+  next:
+    parameters:
+      pipeline:
+        type: string
+      definition-env:
+        type: env_var_name
+    executor: go
+    resource_class: small
+    steps:
+      - start-pipeline:
+          pipeline: << parameters.pipeline >>
+          definition-env: << parameters.definition-env >>
+
+  # Step 1: check the tag before spending a build on it.
+  # It must be a proper version.
+  # It must be signed by a key GitHub trusts.
+  # It must point at a commit on main.
+  release-tag:
+    executor: go
+    steps:
+      - checkout
+      - install-gh
+      - run:
+          name: Tag name is a version
+          # Strict semver, with an optional suffix (v1.2.3, v1.2.3-rc1).
+          # Later steps use the name in shell commands and file names.
+          # So nothing else may pass.
+          command: |
+            tag="${CIRCLE_TAG}"
+            echo "$tag" | grep -Eq -- '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$' \
+              || { echo "ERROR: '$tag' is not a version tag (vMAJOR.MINOR.PATCH[-suffix])"; exit 1; }
+      - run:
+          name: Tag is annotated and signed with a key GitHub verifies
+          # Having a signature is not enough. Any throwaway key makes one.
+          # GitHub checks it against the tagger's registered keys.
+          # We ask GitHub's API for that verdict.
+          command: |
+            tag="${CIRCLE_TAG}"
+            obj="$(gh api "repos/${GH_REPO}/git/ref/tags/${tag}" --jq '"\(.object.type) \(.object.sha)"')"
+            objtype="${obj%% *}"
+            sha="${obj##* }"
+            [ "$objtype" = "tag" ] || { echo "ERROR: $tag is a lightweight tag; use git tag -s"; exit 1; }
+            verdict="$(gh api "repos/${GH_REPO}/git/tags/${sha}" --jq '.verification | "\(.verified) \(.reason)"')"
+            echo "GitHub verification: $verdict"
+            [ "$verdict" = "true valid" ] \
+              || { echo "ERROR: $tag is not signed with a key registered on GitHub for the tagger ($verdict); see RELEASING.md"; exit 1; }
+      - run:
+          name: Tagged commit is on main
+          command: |
+            tag="${CIRCLE_TAG}"
+            git fetch --force origin "+refs/heads/main:refs/remotes/origin/main"
+            git merge-base --is-ancestor "${tag}^{commit}" origin/main \
+              || { echo "ERROR: $tag points at $(git rev-parse --short "${tag}^{commit}"), which is not on main"; exit 1; }
+
+  # Step 2: build the tag twice, on two separate machines.
+  # The `attempt` matrix below creates the two runs.
+  # If the binaries differ at all, the build isn't reproducible.
+  # Then nothing is published.
+  release-build:
+    parameters:
+      attempt:
+        type: integer
+    executor: machine
+    environment: &release-env
+      GO_VERSION: "1.26.8" # go.mod's `toolchain`
+      # Build against the validators' glibc, not this machine's.
+      # BUILD_IMAGE: the same base the Dockerfile uses.
+      # TARGET_IMAGE: the Linux that infra/terraform installs on nodes.
+      # If infra changes the node OS, change these too.
+      #
+      # BUILD_IMAGE is pinned by digest, not by tag.
+      # The `golang:1.26-bookworm` tag moves often (2026-09-23).
+      # With CGO, the image's gcc and libc are part of the build.
+      # A move between the two builds would make them differ.
+      # The release would then fail for no real reason.
+      # Bump it on purpose, together with GO_VERSION:
+      #   docker buildx imagetools inspect golang:1.26-bookworm   # take "Digest:"
+      BUILD_IMAGE: "golang@sha256:a688600ca24f8a4d3ca77f95b0dd40704a9fc787c826660eb7ba0b641b8b175d"
+      TARGET_IMAGE: "debian:12"
+    steps:
+      - checkout
+      # Build inside Debian bookworm, not on this Ubuntu 24.04 host.
+      # CGO is on (secp256k1, pebble), so the binary links to glibc.
+      # Ubuntu 24.04 has glibc 2.39. The nodes run Debian 12, glibc 2.36.
+      # A binary built here would fail to start on every validator.
+      # It would fail at the upgrade height, all at once.
+      # (Nodes: infra/terraform/modules/{hetzner,gcp}.
+      # infra/ansible/roles/node downloads this exact file.)
+      - run:
+          name: Bookworm toolchain
+          command: |
+            mkdir -p /tmp/gocache /tmp/gomodcache
+            cat > /tmp/gobox \<<'EOF'
+            #!/usr/bin/env bash
+            set -euo pipefail
+            exec docker run --rm \
+              --user "$(id -u):$(id -g)" \
+              -v "$PWD:/src" -w /src \
+              -v /tmp/gocache:/gocache \
+              -v /tmp/gomodcache:/gomodcache \
+              -e GOCACHE=/gocache -e GOMODCACHE=/gomodcache \
+              -e GOTOOLCHAIN=auto -e HOME=/tmp \
+              "$BUILD_IMAGE" \
+              bash -c 'git config --global --add safe.directory /src && exec "$@"' -- "$@"
+            EOF
+            chmod +x /tmp/gobox
+      - run:
+          name: Toolchain is the pinned one
+          # GOTOOLCHAIN=auto makes go.mod's `toolchain` line win.
+          # The Dockerfile does the same.
+          # Check the result: the release notes name this version.
+          command: |
+            got="$(/tmp/gobox go version | awk '{print $3}')"
+            echo "toolchain: $got"
+            [ "$got" = "go${GO_VERSION}" ] \
+              || { echo "ERROR: build toolchain $got != pinned go${GO_VERSION}"; exit 1; }
+      # This check runs on the host, not in the build image.
+      # `verify-deps` needs jq, and the golang image has none.
+      # It only checks go.mod rules. It doesn't touch the binary.
+      # No cache here: release builds always start clean.
+      - install-go
+      - run:
+          name: Dependency policy (ENGINEERING.md §2.2, §2.3)
+          command: make verify-deps
+      - run:
+          name: Build linux-amd64
+          command: |
+            /tmp/gobox make build-linux
+            v="${CIRCLE_TAG}"
+            asset="konstellationd-${v}-linux-amd64"
+            mv build/konstellationd "build/$asset"
+            (cd build && sha256sum "$asset" > "$asset.sha256")
+            cat "build/$asset.sha256"
+      - run:
+          name: Version string matches the tag, on the deployment target
+          # Run the binary on the same Linux the validators run.
+          # A glibc mismatch fails here, not on the network.
+          command: |
+            v="${CIRCLE_TAG}"
+            err="$(mktemp)"; out="$(mktemp)"
+            # Keep stderr. A "GLIBC_2.39 not found" error shows up there.
+            # It is kept apart from stdout, so it can't end up in $got.
+            docker run --rm -v "$PWD/build:/b:ro" "$TARGET_IMAGE" \
+              "/b/konstellationd-${v}-linux-amd64" version >"$out" 2>"$err" \
+              || { echo "ERROR: the asset does not run on ${TARGET_IMAGE}"; cat "$err"; exit 1; }
+            got="$(head -1 "$out")"
+            echo "binary reports: $got"
+            [ "$got" = "$v" ] || { echo "ERROR: binary version '$got' != tag '$v' (dirty tree or missing tag at build?)"; exit 1; }
+      # Pass the binary and checksum on to release-publish.
+      # Also keep a copy on the job page, for inspection.
+      - run:
+          name: Stage for publish
+          command: |
+            mkdir -p "/tmp/ws/build-<< parameters.attempt >>"
+            cp build/konstellationd-* "/tmp/ws/build-<< parameters.attempt >>/"
+      - persist_to_workspace:
+          root: /tmp/ws
+          paths:
+            - build-<< parameters.attempt >>
+      - store_artifacts:
+          path: /tmp/ws/build-<< parameters.attempt >>
+          destination: build-<< parameters.attempt >>
+
+  # Step 3: the release binary must pass the vulnerability scan.
+  # See ENGINEERING.md §4.3. Allow-listed findings are fine.
+  release-vulncheck:
+    executor: go
+    steps:
+      - checkout
+      - restore-go-cache
+      - run: make vulncheck-binary
+
+  # Step 4: compare the two builds, sign, and publish.
+  release-publish:
+    executor: go
+    environment: *release-env
+    steps:
+      - checkout
+      - install-gh
+      - attach_workspace:
+          at: /tmp/ws
+      - run:
+          name: Builds must be identical
+          command: |
+            a="$(cat /tmp/ws/build-1/*.sha256 | awk '{print $1}')"
+            b="$(cat /tmp/ws/build-2/*.sha256 | awk '{print $1}')"
+            echo "build-1: $a"; echo "build-2: $b"
+            [ -n "$a" ] && [ "$a" = "$b" ] || { echo "ERROR: non-reproducible build: checksums differ"; exit 1; }
+            mkdir release && cp /tmp/ws/build-1/* release/
+            (cd release && mv ./*.sha256 SHA256SUMS && cat SHA256SUMS)
+            # The checksum came from machine 1, before the file was copied.
+            # Check it against the exact bytes we publish.
+            # Operators trust SHA256SUMS as-is.
+            (cd release && sha256sum -c SHA256SUMS)
+      - run:
+          name: Install cosign
+          command: go install github.com/sigstore/cosign/v3/cmd/cosign@v3.1.3
+      - run:
+          name: Sign the asset (Sigstore, CircleCI OIDC identity)
+          # Keyless signing. No private key to keep safe.
+          # Fulcio gives a short-lived certificate for this pipeline.
+          # Rekor, a public log, records the signature.
+          # The certificate also records the tag built.
+          # It also records whether the job ran with SSH.
+          # Both are checked in the next step.
+          command: |
+            v="${CIRCLE_TAG}"
+            asset="release/konstellationd-${v}-linux-amd64"
+            SIGSTORE_ID_TOKEN="$(circleci run oidc get --claims '{"aud": "sigstore"}' --root-issuer)"
+            export SIGSTORE_ID_TOKEN
+            cosign sign-blob "$asset" \
+              --fulcio-url https://fulcio.sigstore.dev \
+              --rekor-url https://rekor.sigstore.dev \
+              --oidc-issuer https://oidc.circleci.com \
+              --use-signing-config=false \
+              --bundle "${asset}.sigstore.json" \
+              --yes
+      - run:
+          name: Signature verifies, for this project, tag and a hosted run
+          # Read the certificate before trusting it. It must say:
+          # this project, this tag, CircleCI's own machines (no SSH).
+          # Then verify the signature the way an operator will.
+          command: |
+            v="${CIRCLE_TAG}"
+            asset="release/konstellationd-${v}-linux-amd64"
+            cert="$(jq -r '.verificationMaterial.certificate.rawBytes' "${asset}.sigstore.json" | base64 -d | openssl x509 -inform DER -noout -text)"
+            ext() { echo "$cert" | grep -A1 "$1:" | tail -1 | sed 's/^[[:space:]]*//; s/^[^a-zA-Z]*//'; }
+            identity="$(echo "$cert" | grep -o 'URI:https://circleci.com/api/v2/projects/[^, ]*' | head -1 | cut -d: -f2-)"
+            ref="$(ext 1.3.6.1.4.1.57264.1.14)"
+            runner="$(ext 1.3.6.1.4.1.57264.1.11)"
+            echo "identity: $identity"; echo "ref: $ref"; echo "runner: $runner"
+            case "$identity" in
+              "https://circleci.com/api/v2/projects/${CIRCLE_PROJECT_ID}/pipeline-definitions/"?*) ;;
+              *) echo "ERROR: certificate identity is not this project's pipeline"; exit 1 ;;
+            esac
+            [ "$ref" = "refs/tags/${v}" ] || { echo "ERROR: certificate ref '$ref' != refs/tags/${v}"; exit 1; }
+            [ "$runner" = "circleci-hosted" ] || { echo "ERROR: signed from runner environment '$runner'; refusing to publish"; exit 1; }
+            cosign verify-blob "$asset" \
+              --bundle "${asset}.sigstore.json" \
+              --certificate-oidc-issuer https://oidc.circleci.com \
+              --certificate-identity "$identity"
+            echo "$identity" > /tmp/identity
+      - run:
+          name: Create GitHub Release
+          # The notes hold the checksum and the verify command.
+          # GitHub adds the list of merged changes below.
+          command: |
+            v="${CIRCLE_TAG}"
+            identity="$(cat /tmp/identity)"
+            pre=()
+            case "$v" in *-*) pre=(--prerelease) ;; esac # never becomes "Latest"
+            notes="$(mktemp)"
+            {
+              echo "## Binary"
+              echo
+              echo '```'
+              cat release/SHA256SUMS
+              echo '```'
+              echo
+              echo "Built twice on independent machines from signed tag \`$v\` with Go ${GO_VERSION}; both checksums matched. Verify the download with \`sha256sum -c SHA256SUMS\` and its signature with:"
+              echo
+              echo '```'
+              echo "cosign verify-blob konstellationd-${v}-linux-amd64 \\"
+              echo "  --bundle konstellationd-${v}-linux-amd64.sigstore.json \\"
+              echo "  --certificate-oidc-issuer https://oidc.circleci.com \\"
+              echo "  --certificate-identity ${identity}"
+              echo '```'
+              echo
+              echo "Record the checksum in \`networks/RELEASES.md\` (ENGINEERING.md §5.2) before any network runs it."
+            } > "$notes"
+            gh release create "$v" "${pre[@]}" \
+              --verify-tag \
+              --title "$v" \
+              --notes-file "$notes" \
+              --generate-notes \
+              "release/konstellationd-${v}-linux-amd64" \
+              "release/konstellationd-${v}-linux-amd64.sigstore.json" \
+              release/SHA256SUMS
+
+workflows:
+  # A tag, handed on by vuln.yml: check, build twice, scan, publish.
+  release:
+    when:
+      equal: ["", << pipeline.parameters.mode >>]
+    jobs:
+      # Every job here has this filter.
+      # It runs for version tags only, never for a branch.
+      - release-tag:
+          context: konstellation-github
+          filters: &release-filters
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+      - release-build:
+          matrix:
+            parameters:
+              attempt: [1, 2]
+          requires: [release-tag]
+          filters: *release-filters
+      - release-vulncheck:
+          requires: [release-tag]
+          filters: *release-filters
+      - release-publish:
+          context: konstellation-release
+          requires: [release-build, release-vulncheck]
+          filters: *release-filters
+
+  # Scheduled runs: nothing to release.
+  # Go straight on to upstream-watch.yml.
+  scheduled:
+    when:
+      not:
+        equal: ["", << pipeline.parameters.mode >>]
+    jobs:
+      - next:
+          name: start-upstream-watch
+          pipeline: upstream-watch
+          definition-env: UPSTREAM_WATCH_PIPELINE_ID
+          context: konstellation-chain

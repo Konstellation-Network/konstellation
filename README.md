@@ -133,7 +133,7 @@ two codes; nothing is charged either way.
 
 ## Upstream watch
 
-`.github/workflows/upstream-watch.yml` runs `scripts/upstream-check.sh` four times a
+`.circleci/upstream-watch.yml` runs `scripts/upstream-check.sh` four times a
 day. When cosmos/evm publishes a tag newer than `go.mod`'s pin it opens an issue
 (label `upstream-release`) with the release notes, published advisories, commit
 list and hot-zone diff stat. The nightly `govulncheck` job opens an issue (label

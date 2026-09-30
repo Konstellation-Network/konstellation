@@ -22,9 +22,9 @@ latest="$(gh api "repos/$REPO/tags" --paginate --jq '.[].name' 2>/dev/null | gre
 set -e
 [ -n "$latest" ] || { echo "cannot list upstream tags" >&2; exit 2; }
 
-# Surface the resolved tag as a step output so the workflow doesn't have to
-# scrape it back out of the brief's markdown header.
-[ -n "${GITHUB_OUTPUT:-}" ] && echo "latest=$latest" >> "$GITHUB_OUTPUT"
+# Hand the resolved tag to the CI job (UPSTREAM_LATEST_FILE) so it doesn't
+# have to scrape it back out of the brief's markdown header.
+[ -n "${UPSTREAM_LATEST_FILE:-}" ] && echo "$latest" > "$UPSTREAM_LATEST_FILE"
 
 # go.mod can pin a Go pseudo-version (vX.Y.Z-yyyymmddhhmmss-<sha>) instead of a
 # tag. `sort -V` doesn't know semver precedence, so a plain string sort ranks

@@ -1,18 +1,18 @@
 # Releasing `konstellationd`
 
-Every binary a network runs is built by `.github/workflows/release.yml` from a
-signed tag (ENGINEERING.md §2.6). The workflow builds twice on independent
-runners, publishes only if the checksums agree, attaches GitHub build
-provenance, and creates the GitHub Release with the asset and `SHA256SUMS`.
-Nothing is built by hand.
+Every binary a network runs is built by `.circleci/release.yml` from a signed
+tag (ENGINEERING.md §2.6). The workflow builds twice on independent machines,
+publishes only if the checksums agree, signs the asset with Sigstore under
+this CircleCI project's identity, and creates the GitHub Release with the
+asset, its `.sigstore.json` bundle and `SHA256SUMS`. Nothing is built by hand.
 
 The build itself runs inside `golang:1.26-bookworm` — the base the `Dockerfile`
 uses, pinned by digest rather than by tag — and the finished asset is then run
 under `debian:12` before it can be published. CGO is on (secp256k1, pebble) and nothing static-links, so the
-binary carries the build image's glibc: built on the runner's own Ubuntu it
+binary carries the build image's glibc: built on the machine's own Ubuntu it
 would link against glibc 2.39 and refuse to start on the debian-12 nodes
 `infra/terraform` provisions, at the upgrade height, on every validator at
-once. Both images are pinned in `release.yml`'s `env:`; if `infra` moves the
+once. Both images are pinned in `release.yml`'s `environment:`; if `infra` moves the
 fleet to another distro, move `TARGET_IMAGE` (and, if its glibc is older,
 `BUILD_IMAGE`) in the same change.
 
@@ -21,8 +21,8 @@ fleet to another distro, move `TARGET_IMAGE` (and, if its glibc is older,
 1. `main` is green: CI (build, unit, integration, e2e, lint) and the nightly
    `vuln` job.
 2. `go.mod`'s `toolchain` is the latest patch of its Go line (ENGINEERING.md
-   §3), and `ci.yml`, `release.yml`, `vuln.yml` and `tests/e2e/go.mod` carry
-   the same version. `curl -s 'https://go.dev/dl/?mode=json' | jq -r '.[].version'`
+   §3), and every `.circleci/*.yml` (the `cimg/go` tag and `GO_VERSION`) and
+   `tests/e2e/go.mod` carry the same version. `curl -s 'https://go.dev/dl/?mode=json' | jq -r '.[].version'`
    lists what is current. `release.yml`'s `BUILD_IMAGE` digest is bumped in the
    same change — `docker buildx imagetools inspect golang:1.26-bookworm` prints
    the one to paste. Picking up a Debian security rebuild is the other reason
@@ -35,8 +35,10 @@ fleet to another distro, move `TARGET_IMAGE` (and, if its glibc is older,
 
 ## Tag
 
-The workflow builds only a tag that passes three gates, checked before any
-build starts:
+A tag push starts the `ci` pipeline; `release.yml` runs only after `ci.yml`
+and the binary scan in `vuln.yml` pass on that tag (the chain is described at
+the top of `.circleci/ci.yml`). It builds only a tag that passes three gates,
+checked before any build starts:
 
 1. The name is `vMAJOR.MINOR.PATCH` with an optional `-suffix` (`v1.0.0-rc1`).
    Nothing else — the name ends up in shell and file names.
@@ -70,14 +72,23 @@ last real release. Mainnet only ever runs an unsuffixed version.
    ```sh
    gh release download v0.1.0 -R Konstellation-Network/konstellation
    sha256sum -c SHA256SUMS
-   gh attestation verify konstellationd-v0.1.0-linux-amd64 \
-     --repo Konstellation-Network/konstellation \
-     --signer-workflow Konstellation-Network/konstellation/.github/workflows/release.yml
+   cosign verify-blob konstellationd-v0.1.0-linux-amd64 \
+     --bundle konstellationd-v0.1.0-linux-amd64.sigstore.json \
+     --certificate-oidc-issuer https://oidc.circleci.com \
+     --certificate-identity https://circleci.com/api/v2/projects/<PROJECT_ID>/pipeline-definitions/<PIPELINE_DEFINITION_ID>
    ```
-   `--repo` + `--signer-workflow`, not `--owner`: `--owner` accepts an attestation
-   produced by any workflow in any repository of the org, so a binary built by a
-   forked or unrelated workflow would verify. The pair above pins the
-   attestation to this repository and to `release.yml` itself.
+   The release notes print the exact `--certificate-identity`; check it against
+   this project's ID and pipeline definition (CircleCI project settings), not
+   just against the notes. It names this project's pipeline, so a binary signed
+   by any other CircleCI project will not verify. The certificate also records
+   the ref that was built and whether the job ran under "Rerun with SSH";
+   `release-publish` refuses to publish unless they are `refs/tags/<tag>` and
+   `circleci-hosted`, and a careful operator checks both too:
+   ```sh
+   jq -r '.verificationMaterial.certificate.rawBytes' konstellationd-v0.1.0-linux-amd64.sigstore.json \
+     | base64 -d | openssl x509 -inform DER -noout -text \
+     | grep -A1 -E '1\.3\.6\.1\.4\.1\.57264\.1\.1[14]:'
+   ```
 2. Record the version, date and SHA256 in `networks/RELEASES.md` — the ledger
    operators and `infra` take checksums from (ENGINEERING.md §5.2). Nothing
    runs a binary that is not in that table.
@@ -96,9 +107,9 @@ last real release. Mainnet only ever runs an unsuffixed version.
   (`unknown_key`: the key is not registered as a signing key for the
   tagger's account; `unverified_email`: the tagger email is not verified on
   that account).
-- *non-reproducible build*: the two runners produced different binaries. Do
+- *non-reproducible build*: the two machines produced different binaries. Do
   not publish by hand. `BUILD_IMAGE` is digest-pinned, so the build image is
-  not the cause — both runners pulled identical bytes. Look for an input that
+  not the cause — both machines pulled identical bytes. Look for an input that
   is still free to move: a dependency resolved at build time, an unpinned
   tool, a timestamp or path baked into the binary. Re-running will not fix a
   real one, and a release must never be published by hand to get around it.
@@ -108,5 +119,8 @@ last real release. Mainnet only ever runs an unsuffixed version.
 - *binary version ... != tag*, failing inside `debian:12`: if the error is a
   missing `GLIBC_2.3x` symbol rather than a version mismatch, the build image
   is newer than the fleet — see the note at the top of this file.
+- *signature ... refusing to publish*: the certificate's identity, ref or
+  runner environment is wrong. The usual cause is `release-publish` re-run with
+  SSH; re-run it without SSH. Anything else is investigated, not worked around.
 - *vulncheck*: a reachable advisory not in `.govulncheck-allowlist`. Fix or
   justify under ENGINEERING.md §4.1.1 — in a PR, not in the release.

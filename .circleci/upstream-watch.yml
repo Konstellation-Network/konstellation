@@ -1,0 +1,139 @@
+# upstream-watch.yml: notice new cosmos/evm releases (ENGINEERING.md §4.2, §17).
+#
+# What it does:
+#   Our chain is built on cosmos/evm. go.mod pins one version of it.
+#   Every new upstream release may be a security fix.
+#   It must be reviewed within 24 hours.
+#   This job compares our pin with the newest cosmos/evm tag
+#   (scripts/upstream-check.sh).
+#   If upstream is ahead, it opens a GitHub issue (label upstream-release).
+#   The issue holds a review brief:
+#     - the release notes
+#     - published security advisories
+#     - the commit list
+#     - changes in sensitive code (x/vm, statedb, precompiles)
+#   Re-runs update the same issue. A closed issue is reopened.
+#   If the watcher itself breaks, it opens an upstream-watch-failure issue.
+#   So a broken watcher can't hide a release.
+#
+# When it runs:
+#   It is the last link in the chain.
+#   The ci schedules reach it: "watch" four times a day, "nightly" once.
+#   To run it by hand, trigger the "upstream-watch" pipeline in CircleCI.
+#
+# How the four files connect:
+#
+#   ci.yml ──► vuln.yml ──► release.yml ──► upstream-watch.yml
+#
+#   Each file ends with a small `next` job.
+#   It runs once the file's own jobs pass.
+#   It calls the CircleCI API to start the next file.
+#   It uses the same branch or tag, and passes on `mode`.
+#   If anything fails, the chain stops there.
+#   `mode` tells each file what kind of run this is:
+#
+#   mode      started by                  ci      vuln     release  upstream-watch
+#   ""        push / pull request         runs    binary   -        -
+#   ""        tag push                    runs    binary   runs     -
+#   nightly   schedule 17 3 * * * UTC     skip    source   skip     runs
+#   watch     schedule 23 */6 * * * UTC   skip    skip     skip     runs
+#
+#   "skip": the file does no work. It just starts the next one.
+#   "-": the chain stopped before this file.
+#
+# Secrets it needs (CircleCI contexts):
+#   konstellation-github  GH_TOKEN. Reads public repos and this one.
+#                         Writes this repo's issues.
+version: 2.1
+
+parameters:
+  # What kind of run this is. See the table above.
+  # The ci schedules set it. Each `next` job passes it on.
+  # Empty for a push, pull request or tag.
+  mode:
+    type: string
+    default: ""
+
+# Where jobs run.
+executors:
+  # A Docker container with Go already installed. Enough for most jobs.
+  go:
+    docker:
+      # Same Go version as go.mod's `toolchain` line.
+      # app/upstream_pin_test.go fails if they drift apart.
+      - image: cimg/go:1.26.8
+    resource_class: large
+
+# Reusable steps, shared by the jobs below.
+commands:
+  # The GitHub CLI. Used to read tags and open issues and releases.
+  # A fixed version, checked against its published checksums.
+  install-gh:
+    steps:
+      - run:
+          name: Install GitHub CLI
+          command: |
+            v=2.102.0
+            cd /tmp
+            curl -fsSLO "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_linux_amd64.tar.gz"
+            curl -fsSLO "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_checksums.txt"
+            grep " gh_${v}_linux_amd64.tar.gz\$" "gh_${v}_checksums.txt" | sha256sum -c -
+            tar -xzf "gh_${v}_linux_amd64.tar.gz"
+            sudo install "gh_${v}_linux_amd64/bin/gh" /usr/local/bin/gh
+            # Name the repo explicitly. Don't let gh guess it.
+            echo "export GH_REPO=${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}" >> "$BASH_ENV"
+            gh --version
+
+jobs:
+  upstream-watch:
+    executor: go
+    steps:
+      - checkout
+      - install-gh
+      # Exit 0: we are up to date.
+      # Exit 10: upstream is ahead. The brief is in brief.md.
+      # Anything else: the watcher is broken, so the step fails.
+      - run:
+          name: Compare pinned cosmos/evm with upstream
+          command: |
+            set +e
+            UPSTREAM_LATEST_FILE=latest.txt scripts/upstream-check.sh > brief.md 2>&1
+            code=$?
+            set -e
+            echo "$code" > code.txt
+            cat brief.md
+            [ "$code" = 0 ] || [ "$code" = 10 ]
+      # Only when upstream is ahead.
+      # One issue per upstream release, created or updated.
+      - run:
+          name: Open or update the review issue
+          command: |
+            [ "$(cat code.txt)" = 10 ] || { echo "up to date; nothing to file"; exit 0; }
+            title="cosmos/evm $(cat latest.txt) released — review required (§4.2)"
+            scripts/gh-upsert-issue.sh upstream-release \
+              "New cosmos/evm tag; review per ENGINEERING.md §4.2" \
+              "$title" brief.md
+      # Runs only if a step above failed.
+      # So a broken watcher gets noticed.
+      - run:
+          name: Open an issue if the watcher itself is broken
+          when: on_fail
+          command: |
+            scripts/gh-failure-body.sh \
+              "cosmos/evm release tracking may be silently stalled until this is fixed." \
+              brief.md > watch-failure.md
+            scripts/gh-upsert-issue.sh upstream-watch-failure \
+              "upstream-watch is failing; releases may go unnoticed (ENGINEERING.md §17)" \
+              "upstream-watch is failing (ENGINEERING.md §17)" watch-failure.md
+
+workflows:
+  # Runs whenever this pipeline starts.
+  # release.yml starts it at the end of a scheduled chain.
+  # You can also start it by hand.
+  upstream-watch:
+    jobs:
+      # The serial group makes a second run wait for the first.
+      # So two runs never edit the same issue at once.
+      - upstream-watch:
+          context: konstellation-github
+          serial-group: << pipeline.project.slug >>/upstream-watch

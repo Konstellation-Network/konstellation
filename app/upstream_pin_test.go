@@ -2,6 +2,7 @@ package app
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -78,12 +79,12 @@ func TestUpstreamCouplingPins(t *testing.T) {
 	}
 }
 
-// TestWorkflowsPinGoModToolchain: the CI workflows pin setup-go to an exact
-// Go version because setup-go reads only go.mod's `go` line, then `go`
-// downloads the `toolchain` version into the module cache a second time and
-// the cache restore collides with it (2026-09-20, disk-full link failures).
-// The pin must follow go.mod's `toolchain` line, in every job.
-func TestWorkflowsPinGoModToolchain(t *testing.T) {
+// TestCIPinsGoModToolchain: every .circleci/*.yml pins Go to an exact version
+// — the cimg/go image tag for docker jobs, GO_VERSION for machine jobs and the
+// release — so no job builds with one Go and then has `go` download go.mod's `toolchain`
+// into the module cache a second time (2026-09-20, disk-full link failures).
+// Every pin must follow go.mod's `toolchain` line.
+func TestCIPinsGoModToolchain(t *testing.T) {
 	gomod, err := os.ReadFile("../go.mod")
 	if err != nil {
 		t.Fatal(err)
@@ -93,22 +94,26 @@ func TestWorkflowsPinGoModToolchain(t *testing.T) {
 		t.Fatal("go.mod has no toolchain line")
 	}
 	want := string(toolchain[1])
-	for _, wf := range []string{"../.github/workflows/ci.yml", "../.github/workflows/vuln.yml"} {
-		bz, err := os.ReadFile(wf)
+	cfgs, err := filepath.Glob("../.circleci/*.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfgs) == 0 {
+		t.Fatal("no CircleCI configs in .circleci/")
+	}
+	for _, cfg := range cfgs {
+		bz, err := os.ReadFile(cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
-		pins := regexp.MustCompile(`go-version:\s*"([^"]+)"`).FindAllSubmatch(bz, -1)
+		pins := regexp.MustCompile(`(?:cimg/go:|GO_VERSION:\s*")([0-9][^\s"]*)`).FindAllSubmatch(bz, -1)
 		if len(pins) == 0 {
-			t.Errorf("%s: no setup-go go-version pin", wf)
+			t.Errorf("%s: no Go version pin", cfg)
 		}
 		for _, p := range pins {
 			if got := string(p[1]); got != want {
-				t.Errorf("%s pins go-version %q; go.mod toolchain is go%s", wf, got, want)
+				t.Errorf("%s pins Go %q; go.mod toolchain is go%s", cfg, got, want)
 			}
-		}
-		if regexp.MustCompile(`go-version-file:`).Match(bz) {
-			t.Errorf("%s: uses go-version-file, which ignores go.mod's toolchain line", wf)
 		}
 	}
 }

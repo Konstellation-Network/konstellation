@@ -1,0 +1,229 @@
+# vuln.yml: look for known security vulnerabilities (ENGINEERING.md §4.3).
+#
+# What it does:
+#   Runs govulncheck, Go's vulnerability scanner (scripts/vulncheck.sh).
+#   It fails if our code can reach a known vulnerability.
+#   Exceptions must be justified in .govulncheck-allowlist.
+#   There are two kinds of scan:
+#     - Binary scan: every push, pull request and tag.
+#       It scans the built binary. Fast, and it covers exactly what ships.
+#       The binary keeps its symbols (nostrip), so the scan is precise.
+#     - Source scan: nightly.
+#       It scans all the source code. Slower, but more thorough.
+#       It catches advisories in code nobody touched lately.
+#       On failure it opens a GitHub issue, so someone owns it.
+#
+# When it runs:
+#   Only when ci.yml starts it. See the chain below.
+#   To run the source scan by hand, trigger the "vuln" pipeline
+#   in CircleCI with mode=nightly.
+#
+# How the four files connect:
+#
+#   ci.yml ──► vuln.yml ──► release.yml ──► upstream-watch.yml
+#
+#   Each file ends with a small `next` job.
+#   It runs once the file's own jobs pass.
+#   It calls the CircleCI API to start the next file.
+#   It uses the same branch or tag, and passes on `mode`.
+#   If anything fails, the chain stops there.
+#   `mode` tells each file what kind of run this is:
+#
+#   mode      started by                  ci      vuln     release  upstream-watch
+#   ""        push / pull request         runs    binary   -        -
+#   ""        tag push                    runs    binary   runs     -
+#   nightly   schedule 17 3 * * * UTC     skip    source   skip     runs
+#   watch     schedule 23 */6 * * * UTC   skip    skip     skip     runs
+#
+#   "skip": the file does no work. It just starts the next one.
+#   "-": the chain stopped before this file.
+#
+# Secrets it needs (CircleCI contexts):
+#   konstellation-github  GH_TOKEN. Reads this repo and writes issues.
+#                         The nightly scan files an issue on failure.
+#   konstellation-chain   see ci.yml.
+version: 2.1
+
+parameters:
+  # What kind of run this is. See the table above.
+  # The ci schedules set it. Each `next` job passes it on.
+  # Empty for a push, pull request or tag.
+  mode:
+    type: string
+    default: ""
+
+# Where jobs run.
+executors:
+  # A Docker container with Go already installed. Enough for most jobs.
+  go:
+    docker:
+      # Same Go version as go.mod's `toolchain` line.
+      # app/upstream_pin_test.go fails if they drift apart.
+      - image: cimg/go:1.26.8
+    resource_class: large
+
+# Reusable steps, shared by the jobs below.
+commands:
+  # Start the next file's pipeline.
+  # Same branch or tag, same `mode`.
+  # The konstellation-chain context gives the token and pipeline IDs.
+  # If one is missing, the step fails and names it.
+  start-pipeline:
+    parameters:
+      pipeline:
+        type: string
+      definition-env:
+        type: env_var_name
+    steps:
+      - run:
+          name: Start the << parameters.pipeline >> pipeline
+          command: |
+            def="${<< parameters.definition-env >>:?not set; add it to the konstellation-chain context}"
+            if [ -n "${CIRCLE_TAG:-}" ]; then
+              ref="$(jq -n --arg t "$CIRCLE_TAG" '{tag: $t}')"
+            else
+              ref="$(jq -n --arg b "$CIRCLE_BRANCH" '{branch: $b}')"
+            fi
+            jq -n --arg d "$def" --argjson ref "$ref" --arg mode "<< pipeline.parameters.mode >>" \
+              '{definition_id: $d, config: $ref, checkout: $ref, parameters: {mode: $mode}}' > /tmp/next.json
+            cat /tmp/next.json
+            curl -fsS -X POST "https://circleci.com/api/v2/project/<< pipeline.project.slug >>/pipeline/run" \
+              -H "Circle-Token: ${CIRCLE_TOKEN:?not set; add it to the konstellation-chain context}" \
+              -H "content-type: application/json" \
+              --data @/tmp/next.json
+
+  # The GitHub CLI. Used to read tags and open issues and releases.
+  # A fixed version, checked against its published checksums.
+  install-gh:
+    steps:
+      - run:
+          name: Install GitHub CLI
+          command: |
+            v=2.102.0
+            cd /tmp
+            curl -fsSLO "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_linux_amd64.tar.gz"
+            curl -fsSLO "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_checksums.txt"
+            grep " gh_${v}_linux_amd64.tar.gz\$" "gh_${v}_checksums.txt" | sha256sum -c -
+            tar -xzf "gh_${v}_linux_amd64.tar.gz"
+            sudo install "gh_${v}_linux_amd64/bin/gh" /usr/local/bin/gh
+            # Name the repo explicitly. Don't let gh guess it.
+            echo "export GH_REPO=${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}" >> "$BASH_ENV"
+            gh --version
+
+  # Reuse Go modules and compiled packages from earlier runs.
+  # The cache is keyed on go.sum.
+  # A dependency change starts a fresh cache.
+  restore-go-cache:
+    parameters:
+      sum:
+        type: string
+        default: go.sum
+    steps:
+      - restore_cache:
+          keys:
+            - go-v1-{{ arch }}-{{ checksum "<< parameters.sum >>" }}-{{ .Environment.CIRCLE_JOB }}
+            - go-v1-{{ arch }}-{{ checksum "<< parameters.sum >>" }}-
+
+jobs:
+  # The link to the next file in the chain.
+  # It only calls the CircleCI API, so the smallest container is enough.
+  next:
+    parameters:
+      pipeline:
+        type: string
+      definition-env:
+        type: env_var_name
+    executor: go
+    resource_class: small
+    steps:
+      - start-pipeline:
+          pipeline: << parameters.pipeline >>
+          definition-env: << parameters.definition-env >>
+
+  # Binary scan: build the binary with symbols, then scan it.
+  # Fast, and it covers exactly what ships.
+  vuln-binary:
+    executor: go
+    steps:
+      - checkout
+      - restore-go-cache
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: make vulncheck-binary COSMOS_BUILD_OPTIONS=nostrip
+
+  # Source scan: scan all the source code.
+  # Slower, but it catches advisories in untouched code.
+  vuln-source:
+    executor: go
+    steps:
+      - checkout
+      - install-gh
+      - restore-go-cache
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      # Keep a copy of the output: the issue below quotes its tail.
+      - run:
+          command: make vulncheck 2>&1 | tee vulncheck.log
+          no_output_timeout: 40m
+      # A failed nightly run that nobody reads is useless (§4.3).
+      # So turn it into an issue someone owns.
+      - run:
+          name: Open an issue on failure
+          when: on_fail
+          command: |
+            scripts/gh-failure-body.sh \
+              "Failed on $(date -u +%Y-%m-%d)." \
+              vulncheck.log \
+              "Bump the dependency, or add a justified entry to .govulncheck-allowlist and ENGINEERING.md §4.1.1." > body.md
+            scripts/gh-upsert-issue.sh vulncheck \
+              "Nightly govulncheck failure (ENGINEERING.md §4.3)" \
+              "nightly govulncheck failing (ENGINEERING.md §4.3)" body.md
+
+workflows:
+  # Push, pull request or tag: binary scan.
+  binary:
+    when:
+      equal: ["", << pipeline.parameters.mode >>]
+    jobs:
+      - vuln-binary:
+          filters:
+            tags:
+              only: /.*/
+      # Only a version tag goes on to release.yml.
+      # For a branch or pull request, the chain ends here.
+      - next:
+          name: start-release
+          pipeline: release
+          definition-env: RELEASE_PIPELINE_ID
+          context: konstellation-chain
+          requires: [vuln-binary]
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+
+  # Nightly schedule: source scan, then on towards upstream-watch.yml.
+  source:
+    when:
+      equal: ["nightly", << pipeline.parameters.mode >>]
+    jobs:
+      # The serial group stops two runs from overlapping.
+      - vuln-source:
+          context: konstellation-github
+          serial-group: << pipeline.project.slug >>/vuln-source
+      - next:
+          name: start-release
+          pipeline: release
+          definition-env: RELEASE_PIPELINE_ID
+          context: konstellation-chain
+          requires: [vuln-source]
+
+  # "watch" schedule: no scan, go straight on.
+  scheduled:
+    when:
+      equal: ["watch", << pipeline.parameters.mode >>]
+    jobs:
+      - next:
+          name: start-release
+          pipeline: release
+          definition-env: RELEASE_PIPELINE_ID
+          context: konstellation-chain

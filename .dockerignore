@@ -4,4 +4,4 @@ data/
 *.log
 mnemonics.yaml
 tests/e2e/
-.github/
+.circleci/

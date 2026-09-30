@@ -1,0 +1,261 @@
+# ci.yml: build, test and lint the code.
+#
+# What it does:
+#   - Checks the dependency rules.
+#   - Builds the node and runs the unit and integration tests.
+#   - Runs end-to-end tests against real nodes in Docker.
+#   - Lints the code.
+#   The three jobs run side by side.
+#   When all of them pass, this file starts vuln.yml.
+#
+# When it runs:
+#   This is the first link in the chain.
+#   It is the only pipeline with its own triggers.
+#   Set these up on the "ci" pipeline in CircleCI:
+#     - push to main, and pull requests (opened or updated)
+#     - tag push (every release starts here)
+#     - schedule "nightly": 17 3 * * * UTC on main, parameter mode=nightly
+#     - schedule "watch":   23 */6 * * * UTC on main, parameter mode=watch
+#
+# How the four files connect:
+#
+#   ci.yml ──► vuln.yml ──► release.yml ──► upstream-watch.yml
+#
+#   Each file ends with a small `next` job.
+#   It runs once the file's own jobs pass.
+#   It calls the CircleCI API to start the next file.
+#   It uses the same branch or tag, and passes on `mode`.
+#   If anything fails, the chain stops there.
+#   `mode` tells each file what kind of run this is:
+#
+#   mode      started by                  ci      vuln     release  upstream-watch
+#   ""        push / pull request         runs    binary   -        -
+#   ""        tag push                    runs    binary   runs     -
+#   nightly   schedule 17 3 * * * UTC     skip    source   skip     runs
+#   watch     schedule 23 */6 * * * UTC   skip    skip     skip     runs
+#
+#   "skip": the file does no work. It just starts the next one.
+#   "-": the chain stopped before this file.
+#
+# Secrets it needs (CircleCI contexts):
+#   konstellation-chain   Used by every `next` job. It holds:
+#                         - CIRCLE_TOKEN: a CircleCI API token that can
+#                           start pipelines in this project.
+#                         - VULN_PIPELINE_ID
+#                         - RELEASE_PIPELINE_ID
+#                         - UPSTREAM_WATCH_PIPELINE_ID
+version: 2.1
+
+parameters:
+  # What kind of run this is. See the table above.
+  # The ci schedules set it. Each `next` job passes it on.
+  # Empty for a push, pull request or tag.
+  mode:
+    type: string
+    default: ""
+
+# Where jobs run.
+executors:
+  # A Docker container with Go already installed. Enough for most jobs.
+  go:
+    docker:
+      # Same Go version as go.mod's `toolchain` line.
+      # app/upstream_pin_test.go fails if they drift apart.
+      - image: cimg/go:1.26.8
+    resource_class: large
+  # A full virtual machine with its own Docker.
+  # For jobs that start their own containers (e2e tests, release build).
+  machine:
+    machine:
+      image: ubuntu-2404:current
+    resource_class: large
+
+# Reusable steps, shared by the jobs below.
+commands:
+  # Start the next file's pipeline.
+  # Same branch or tag, same `mode`.
+  # The konstellation-chain context gives the token and pipeline IDs.
+  # If one is missing, the step fails and names it.
+  start-pipeline:
+    parameters:
+      pipeline:
+        type: string
+      definition-env:
+        type: env_var_name
+    steps:
+      - run:
+          name: Start the << parameters.pipeline >> pipeline
+          command: |
+            def="${<< parameters.definition-env >>:?not set; add it to the konstellation-chain context}"
+            if [ -n "${CIRCLE_TAG:-}" ]; then
+              ref="$(jq -n --arg t "$CIRCLE_TAG" '{tag: $t}')"
+            else
+              ref="$(jq -n --arg b "$CIRCLE_BRANCH" '{branch: $b}')"
+            fi
+            jq -n --arg d "$def" --argjson ref "$ref" --arg mode "<< pipeline.parameters.mode >>" \
+              '{definition_id: $d, config: $ref, checkout: $ref, parameters: {mode: $mode}}' > /tmp/next.json
+            cat /tmp/next.json
+            curl -fsS -X POST "https://circleci.com/api/v2/project/<< pipeline.project.slug >>/pipeline/run" \
+              -H "Circle-Token: ${CIRCLE_TOKEN:?not set; add it to the konstellation-chain context}" \
+              -H "content-type: application/json" \
+              --data @/tmp/next.json
+
+  # Machine images ship some Go, maybe not ours.
+  # Install exactly $GO_VERSION, set in the job's environment.
+  # The download is checked against go.dev's published sha256.
+  install-go:
+    steps:
+      - run:
+          name: Install Go ${GO_VERSION}
+          command: |
+            f="go${GO_VERSION}.linux-amd64.tar.gz"
+            sha="$(curl -fsSL 'https://go.dev/dl/?mode=json&include=all' | jq -r --arg f "$f" '.[].files[] | select(.filename == $f) | .sha256')"
+            [ -n "$sha" ] || { echo "ERROR: no published sha256 for $f"; exit 1; }
+            curl -fsSLo "/tmp/$f" "https://go.dev/dl/$f"
+            echo "$sha  /tmp/$f" | sha256sum -c -
+            sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf "/tmp/$f"
+            echo 'export PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"' >> "$BASH_ENV"
+            /usr/local/go/bin/go version
+
+  # Reuse Go modules and compiled packages from earlier runs.
+  # The cache is keyed on go.sum.
+  # A dependency change starts a fresh cache.
+  restore-go-cache:
+    parameters:
+      sum:
+        type: string
+        default: go.sum
+    steps:
+      - restore_cache:
+          keys:
+            - go-v1-{{ arch }}-{{ checksum "<< parameters.sum >>" }}-{{ .Environment.CIRCLE_JOB }}
+            - go-v1-{{ arch }}-{{ checksum "<< parameters.sum >>" }}-
+
+  # Store the Go modules and compiled packages for the next run.
+  save-go-cache:
+    parameters:
+      sum:
+        type: string
+        default: go.sum
+    steps:
+      - save_cache:
+          key: go-v1-{{ arch }}-{{ checksum "<< parameters.sum >>" }}-{{ .Environment.CIRCLE_JOB }}
+          paths:
+            - ~/go/pkg/mod
+            - ~/.cache/go-build
+
+jobs:
+  # The link to the next file in the chain.
+  # It only calls the CircleCI API, so the smallest container is enough.
+  next:
+    parameters:
+      pipeline:
+        type: string
+      definition-env:
+        type: env_var_name
+    executor: go
+    resource_class: small
+    steps:
+      - start-pipeline:
+          pipeline: << parameters.pipeline >>
+          definition-env: << parameters.definition-env >>
+
+  # Dependency rules, then build, then unit and integration tests.
+  build-test:
+    executor: go
+    steps:
+      - checkout
+      - restore-go-cache
+      - run:
+          name: Dependency policy (ENGINEERING.md §2.2, §2.3)
+          command: make verify-deps
+      - run:
+          name: Build
+          command: make build
+      - run:
+          name: Unit tests
+          command: make test-unit
+          no_output_timeout: 20m
+      - run:
+          name: Integration tests
+          command: make test-integration
+          no_output_timeout: 25m
+      - save-go-cache
+
+  e2e:
+    # Starts real nodes and talks to them (interchaintest).
+    # The nodes are Docker containers.
+    # So this job needs a full machine with its own Docker.
+    executor: machine
+    environment:
+      GO_VERSION: "1.26.8" # as above; tests/e2e/go.mod carries the same toolchain line
+    steps:
+      - checkout
+      - install-go
+      - restore-go-cache:
+          sum: tests/e2e/go.sum
+      - run:
+          name: Build node image
+          command: make docker-build
+      - run:
+          name: End-to-end (interchaintest)
+          command: make test-e2e
+          no_output_timeout: 35m
+      - save-go-cache:
+          sum: tests/e2e/go.sum
+
+  # Style and static checks with golangci-lint.
+  # Covers the main module and the separate tests/e2e module.
+  lint:
+    executor: go
+    steps:
+      - checkout
+      - restore-go-cache
+      - run:
+          name: Install golangci-lint
+          # Keep in step with .golangci.yml. Bump on purpose only.
+          command: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
+      - run:
+          name: Lint
+          command: golangci-lint run --timeout 10m ./...
+      - run:
+          name: Lint tests/e2e (separate module)
+          command: cd tests/e2e && golangci-lint run --timeout 10m --config ../../.golangci.yml ./...
+      - save-go-cache
+
+workflows:
+  # Push, pull request or tag: do the real work, then start vuln.yml.
+  ci:
+    when:
+      equal: ["", << pipeline.parameters.mode >>]
+    jobs:
+      # These run on tags too, because a release starts here.
+      # CircleCI skips a job on a tag unless its filters mention tags.
+      - build-test:
+          filters: &all-refs
+            tags:
+              only: /.*/
+      - e2e:
+          filters: *all-refs
+      - lint:
+          filters: *all-refs
+      - next:
+          name: start-vuln
+          pipeline: vuln
+          definition-env: VULN_PIPELINE_ID
+          context: konstellation-chain
+          requires: [build-test, e2e, lint]
+          filters: *all-refs
+
+  # Scheduled runs ("nightly", "watch"): nothing to build.
+  # Go straight on to vuln.yml.
+  scheduled:
+    when:
+      not:
+        equal: ["", << pipeline.parameters.mode >>]
+    jobs:
+      - next:
+          name: start-vuln
+          pipeline: vuln
+          definition-env: VULN_PIPELINE_ID
+          context: konstellation-chain
