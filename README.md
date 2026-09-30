@@ -144,3 +144,7 @@ list and hot-zone diff stat. The nightly `govulncheck` job opens an issue (label
 Treat every patch tag as a security release (§4.2). Diff `x/vm/`, `x/vm/statedb/`,
 `precompiles/` in `~/src/evm-reference` first, then bump `go.mod`, `make verify-deps`,
 `make test-unit`, `make vulncheck`, and record the review in `ENGINEERING.md §4.1`.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE). The Konstellation name and logo are trademarks and are not licensed; see the [trademark policy](https://github.com/Konstellation-Network/.github).
